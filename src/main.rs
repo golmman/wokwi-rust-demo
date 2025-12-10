@@ -59,17 +59,6 @@ fn main() -> ! {
     // LED setup
     let mut led = pins.led.into_push_pull_output();
 
-    // DEBUG: Slow blink x2 to indicate START (Health Check)
-    for _ in 0..2 {
-        led.set_high().unwrap();
-        delay.delay_ms(500);
-        led.set_low().unwrap();
-        delay.delay_ms(500);
-    }
-    
-    // Ensure LED is OFF before I2C init
-    led.set_low().unwrap();
-
     // I2C Setup
     // GP26 = SDA, GP27 = SCL
     let sda_pin: Pin<_, FunctionI2C, PullUp> = pins
@@ -90,14 +79,8 @@ fn main() -> ! {
         &clocks.peripheral_clock,
     );
 
-    // DEBUG: Raw I2C Init Sequence
-    // Blink Start Man Init
-    led.set_high().unwrap();
-    delay.delay_ms(100);
-    led.set_low().unwrap();
-    delay.delay_ms(100);
-
-    // Sequence
+    // I2C Init Sequence (Manual)
+    // We manually initialize the display to avoid issues with the ssd1306 library's init sequence in Wokwi.
     let cmds = [
         0xAE, // Display Off
         0xD5, 0x80, // Clock div
@@ -118,31 +101,17 @@ fn main() -> ! {
         0xAF, // Display ON
     ];
 
-    for (_i, cmd) in cmds.iter().enumerate() {
+    for cmd in cmds {
         // Send Control Byte 0x00 + Command
-        if i2c.write(0x3Cu8, &[0x00, *cmd]).is_err() {
-            // Panic if write fails
-             loop {
-                 led.set_high().unwrap();
-                 delay.delay_ms(50);
-                 led.set_low().unwrap();
-                 delay.delay_ms(50);
-             }
-        }
-        // Small delay to prevent overwhelming simulation?
-        delay.delay_ms(10);
+        // We panic if this fails as display is essential
+        i2c.write(0x3Cu8, &[0x00, cmd]).unwrap();
     }
     
-    // Init Success Blink (Long)
-    led.set_high().unwrap();
-    delay.delay_ms(1000);
-    led.set_low().unwrap();
-
     let interface = I2CDisplayInterface::new(i2c);
     let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
         .into_buffered_graphics_mode();
     
-    // SKIP display.init(). We did it manually.
+    // Note: display.init() is skipped because we performed manual initialization above.
 
     let text_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
@@ -153,11 +122,32 @@ fn main() -> ! {
     let mut y = 20;
     let mut dx = 2;
     let mut dy = 2;
+    
+    // Timer state
+    let mut frame_count = 0u32;
+    let mut seconds = 0u32;
+    
+    // String buffer for display text
+    // "Wokwi Rust: 12345" needs < 32 chars
+    use core::fmt::Write;
+    use heapless::String;
 
     loop {
-        // Pulse LED
-        led.set_high().unwrap();
+        // Frame management (approx 20 FPS based on 50ms delay)
+        frame_count += 1;
         
+        // Update seconds every 20 frames (50ms * 20 = 1000ms = 1s)
+        if frame_count % 20 == 0 {
+            seconds += 1;
+        }
+        
+        // Blink LED: ON for 0-9 (0.5s), OFF for 10-19 (0.5s)
+        if (frame_count % 20) < 10 {
+            led.set_high().unwrap();
+        } else {
+            led.set_low().unwrap();
+        }
+
         // Update physics
         x += dx;
         y += dy;
@@ -171,8 +161,12 @@ fn main() -> ! {
 
         display.clear(BinaryColor::Off).unwrap();
         
-        // Draw things
-        Text::new("Wokwi Rust", Point::new(30, 10), text_style)
+        // Draw Text with Counter
+        let mut text_buf: String<32> = String::new();
+        // If write fails, just show error char or empty (unwrap panics, which is okay here)
+        write!(&mut text_buf, "Wokwi Rust: {}", seconds).unwrap();
+        
+        Text::new(&text_buf, Point::new(20, 10), text_style)
             .draw(&mut display)
             .unwrap();
             
@@ -187,11 +181,9 @@ fn main() -> ! {
             .draw(&mut display)
             .unwrap();
 
-        // Flush display
         display.flush().unwrap();
         
-        // Turn LED OFF after frame done
-        led.set_low().unwrap();
+        // Fixed delay for ~20FPS
         delay.delay_ms(50);
     }
 }
