@@ -106,7 +106,11 @@ fn main() -> ! {
         // Assumes Device 0 is Leftmost (Thousands) ... Device 3 is Rightmost (Ones)
         // If display order is reversed in simulation, invert this loop.
         for (i, &digit) in digits.iter().enumerate() {
-             display.write_raw(i, &DIGITS[digit as usize]).unwrap();
+            let mut bitmap = DIGITS[digit as usize];
+            for b in &mut bitmap {
+                *b = b.reverse_bits();
+            }
+            display.write_raw(3 - i, &bitmap).unwrap();
         }
 
         // Delay 100ms
