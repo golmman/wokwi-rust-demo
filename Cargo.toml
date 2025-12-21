@@ -9,7 +9,7 @@ cortex-m-rt = "0.7"
 panic-halt = "0.2"
 rp-pico = { version = "0.9", features = ["boot2"] }
 embedded-hal = "0.2"
-ssd1306 = "0.8"
+max7219 = "0.4"
 embedded-graphics = "0.8"
 defmt = "0.3"
 defmt-rtt = "0.4"
