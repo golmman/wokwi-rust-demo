@@ -11,7 +11,9 @@ use rp_pico::hal::{
     sio::Sio,
     spi::Spi,
     watchdog::Watchdog,
+    Timer,
 };
+use embedded_hal::blocking::delay::DelayMs;
 use rp_pico::hal::fugit::RateExtU32;
 
 // We use the max7219 crate to drive the display
@@ -52,7 +54,7 @@ fn main() -> ! {
     .ok()
     .unwrap();
 
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
+    let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
     let pins = rp_pico::Pins::new(
         pac.IO_BANK0,
@@ -102,7 +104,7 @@ fn main() -> ! {
         let d1 = (val / 10) % 10;
         let d0 = val % 10;
 
-        let digits = [d3, d2, d1, d0];
+        let digits = [d0, d1, d2, d3];
         // Assumes Device 0 is Leftmost (Thousands) ... Device 3 is Rightmost (Ones)
         // If display order is reversed in simulation, invert this loop.
         for (i, &digit) in digits.iter().enumerate() {
@@ -114,7 +116,7 @@ fn main() -> ! {
         }
 
         // Delay 100ms
-        delay.delay_ms(100);
+        timer.delay_ms(100);
         count += 1;
 
         // Blink LED

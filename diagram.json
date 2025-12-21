@@ -1,64 +1,31 @@
 {
-    "version": 1,
-    "author": "Antigravity",
-    "editor": "wokwi",
-    "parts": [
-        {
-            "type": "wokwi-breadboard-mini",
-            "id": "bb1",
-            "top": 0,
-            "left": 0,
-            "attrs": {}
-        },
-        {
-            "type": "wokwi-pi-pico",
-            "id": "pico",
-            "top": 112,
-            "left": 50,
-            "rotate": 270,
-            "attrs": {}
-        },
-        {
-            "type": "wokwi-max7219-matrix",
-            "id": "matrix1",
-            "top": 60,
-            "left": 180,
-            "attrs": {
-                "chain": "4"
-            }
-        }
-    ],
-    "connections": [
-        [
-            "pico:3V3",
-            "matrix1:VCC",
-            "red",
-            []
-        ],
-        [
-            "pico:GND.8",
-            "matrix1:GND",
-            "black",
-            []
-        ],
-        [
-            "pico:GP18",
-            "matrix1:CLK",
-            "purple",
-            []
-        ],
-        [
-            "pico:GP17",
-            "matrix1:CS",
-            "green",
-            []
-        ],
-        [
-            "pico:GP19",
-            "matrix1:DIN",
-            "orange",
-            []
-        ]
-    ],
-    "dependencies": {}
+  "version": 1,
+  "author": "Antigravity",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "wokwi-breadboard-mini", "id": "bb1", "top": -78.2, "left": -136.8, "attrs": {} },
+    {
+      "type": "wokwi-pi-pico",
+      "id": "pico",
+      "top": 164.1,
+      "left": 153.35,
+      "rotate": 270,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-max7219-matrix",
+      "id": "matrix1",
+      "top": -47.4,
+      "left": 65.04,
+      "attrs": { "chain": "4" }
+    }
+  ],
+  "connections": [
+    [ "pico:3V3", "matrix1:VCC", "red", [] ],
+    [ "pico:GND.8", "matrix1:GND", "black", [ "v-145.2", "h374.4", "v-105.6" ] ],
+    [ "pico:GP18", "matrix1:CLK", "purple", [ "v-106.8", "h201.6", "v-115.2" ] ],
+    [ "pico:GP17", "matrix1:CS", "green", [ "v-97.2", "h192", "v-134.4" ] ],
+    [ "pico:GP19", "matrix1:DIN", "orange", [ "v-126", "h230.4", "v-115.2" ] ]
+  ],
+  "dependencies": {}
 }
