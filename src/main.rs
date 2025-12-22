@@ -2,7 +2,7 @@
 #![no_main]
 
 use cortex_m_rt::entry;
-use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
+use embedded_hal::digital::v2::ToggleableOutputPin;
 use panic_halt as _;
 use rp_pico::hal::{
     clocks::{init_clocks_and_plls, Clock},
@@ -134,7 +134,6 @@ const FONT: [[[u8; 3]; 8]; 11] = [
 #[entry]
 fn main() -> ! {
     let mut pac = pac::Peripherals::take().unwrap();
-    let core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let sio = Sio::new(pac.SIO);
 
@@ -196,25 +195,20 @@ fn main() -> ! {
             (secs / 10), (secs % 10),
         ];
 
-        let mut fb = [0u8; 32];
+        let mut fb_rows = [0u32; 8];
         let mut cursor = 0; // Start at col 0
 
         for (i, &d) in digits.iter().enumerate() {
-            // Convert visual font to bitmap cols
-            let mut bitmap = [0u8; 3];
             for r in 0..8 {
                 for c in 0..3 {
                     if FONT[d as usize][r][c] != 0 {
-                        bitmap[c] |= 1 << r;
+                        // Map to 32-bit row. Column 0 is MSB of first device.
+                        let bit_pos = 31 - (cursor + c);
+                        if bit_pos < 32 {
+                            fb_rows[r] |= 1 << bit_pos;
+                        }
                     }
                 }
-            }
-
-            // Draw 3 bytes
-            if cursor + 3 <= 32 {
-                 fb[cursor] = bitmap[0];
-                 fb[cursor+1] = bitmap[1];
-                 fb[cursor+2] = bitmap[2];
             }
             cursor += 3;
             // Add 1 pixel gap, except after last char
@@ -223,34 +217,19 @@ fn main() -> ! {
             }
         }
 
-        // Write to display
+        // Write row-by-row to the 4 chained devices
         for dev_idx in 0..4 {
-            // Fix string order: 0->0, 1->1 ...
-            let logical_dev = dev_idx; 
-            let start_col = logical_dev * 8;
-            
             let mut dev_buffer = [0u8; 8];
-
-            // Extract 8 columns for this device
-            let mut cols = [0u8; 8];
-            for col in 0..8 {
-                let fb_idx = start_col + col;
-                if fb_idx < 32 {
-                    cols[col] = fb[fb_idx];
-                }
-            }
-
-            // Transpose: Map Columns to Rows
             for r in 0..8 {
-                for c in 0..8 {
-                    // Fix character mirroring: Use c instead of 7-c
-                    let bit = (cols[c] >> r) & 1;
-                    if bit != 0 {
-                        dev_buffer[r] |= 1 << c;
-                    }
-                }
+                // Extract 8 bits for this device's row r
+                // Device 0: bits 31-24
+                // Device 1: bits 23-16
+                // ...
+                let shift = 24 - (dev_idx * 8);
+                dev_buffer[r] = ((fb_rows[r] >> shift) & 0xFF) as u8;
+                
+                // If it's upside down on hardware, use dev_buffer[7 - r] or dev_buffer[r].reverse_bits()
             }
-            
             display.write_raw(dev_idx, &dev_buffer).unwrap();
         }
 
