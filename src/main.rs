@@ -177,7 +177,7 @@ fn main() -> ! {
     let mut display = MAX7219::from_spi_cs(4, spi, cs).unwrap();
     display.power_on().unwrap();
     for i in 0..4 {
-        display.set_intensity(i, 0x4).unwrap();
+        display.set_intensity(i, 0x0).unwrap();
         display.clear_display(i).unwrap();
     }
 
