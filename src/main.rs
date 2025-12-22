@@ -17,45 +17,118 @@ use rp_pico::hal::fugit::RateExtU32;
 use embedded_hal::blocking::delay::DelayMs;
 use max7219::MAX7219;
 
-// 3x5 Font (Centered in 8-pixel height, shifted left by 1 for alignment/reversal context)
-// Because we reverse bits for display, we need to define them carefully.
-// Let's define them normally first (LSB=Top, MSB=Bottom or vice versa), then flip.
-// Max7219: LSB is usually top row D0.
-// Let's define standard 3x5 (Rows 1-5).
-// 0x1F = 0001 1111 (Rows 0-4? No, assume Row 1-5 = 0x3E).
-// Let's use 0x1F (Rows 0-4) and shift later if needed? No, let's use what I derived.
-// Actually, let's use 0x7F for full height if needed, but 0x1F is 5 pixels.
-// To center, shift up/down.
-// Width is 3 bytes.
-
-const FONT: [[u8; 3]; 11] = [
-    // 0: [0x1F, 0x11, 0x1F] -> Shift shifted to center (<<1) -> [0x3E, 0x22, 0x3E]
-    [0x3E, 0x22, 0x3E], // 0
-    [0x00, 0x3E, 0x00], // 1
-    [0x2E, 0x2A, 0x3A], // 2 (derived from 3x5 "standard" 0x17, 0x15, 0x1D but flipped? No, let's use 0x2E(..101110), 0x2A(..101010), 0x3A(..111010) )
-    // Wait, let's stick to the bits I know:
-    // 3: [0x22, 0x2A, 0x3E] (Left: Top+Bot=0x22, Mid: Top+Mid+Bot=0x2A, Right: Full=0x3E)
-    [0x22, 0x2A, 0x3E], // 3
-    // 4: [0x1C, 0x08, 0x3E] (Left: Top+Mid? 0x0F? No. 0x18(Top+Mid)? 0x1C? )
-    // Let's use standard hex for 3x5 and shift << 1.
-    // 0: 1F 11 1F -> 3E 22 3E
-    // 1: 00 1F 00 -> 00 3E 00
-    // 2: 17 15 1D -> 2E 2A 3A
-    // 3: 15 15 1F -> 2A 2A 3E (Left 15 is 10101? Top+Mid+Bot? Yes. Right 1F is full. 3 is `[2A, 2A, 3E]`)
-    // 4: 07 04 1F -> 0E 08 3E (Left 07 = 11100 (Bot+Mid+Top?). 04=Mid. 1F=Full col?)
-    [0x0E, 0x08, 0x3E], // 4
-    // 5: 1D 15 17 -> 3A 2A 2E
-    [0x3A, 0x2A, 0x2E], // 5
-    // 6: 1F 15 17 -> 3E 2A 2E
-    [0x3E, 0x2A, 0x2E], // 6
-    // 7: 10 10 1F -> 20 20 3E (Left: Top. Mid: Top. Right: Full. Looks like 7).
-    [0x20, 0x20, 0x3E], // 7
-    // 8: 1F 15 1F -> 3E 2A 3E
-    [0x3E, 0x2A, 0x3E], // 8
-    // 9: 17 15 1F -> 2E 2A 3E
-    [0x2E, 0x2A, 0x3E], // 9
-    // : (Colon). 14 (0x0A<<1). 00010100.
-    [0x00, 0x14, 0x00], // :
+// Visual 3x8 Font (11 chars, 8 rows, 3 cols)
+const FONT: [[[u8; 3]; 8]; 11] = [
+    [
+        [0, 1, 0], 
+        [1, 0, 1], 
+        [1, 0, 1], 
+        [1, 0, 1], 
+        [1, 0, 1], 
+        [1, 0, 1], 
+        [1, 0, 1], 
+        [0, 1, 0]
+    ],
+    [
+        [0, 0, 1], 
+        [0, 1, 1], 
+        [1, 0, 1], 
+        [0, 0, 1], 
+        [0, 0, 1], 
+        [0, 0, 1], 
+        [0, 0, 1], 
+        [0, 0, 1], 
+    ],
+    [
+        [0, 1, 0],
+        [1, 0, 1],
+        [0, 0, 1],
+        [1, 1, 1],
+        [1, 0, 0],
+        [1, 1, 1],
+        [0, 0, 0],
+        [0, 0, 0]
+    ],
+    [
+        [0, 0, 0],
+        [1, 1, 1],
+        [0, 0, 1],
+        [1, 1, 1],
+        [0, 0, 1],
+        [1, 1, 1],
+        [0, 0, 0],
+        [0, 0, 0]
+    ],
+    [
+        [0, 0, 0],
+        [1, 0, 1],
+        [1, 0, 1],
+        [1, 1, 1], 
+        [0, 0, 1],
+        [0, 0, 1],
+        [0, 0, 0],
+        [0, 0, 0]
+    ],
+    [
+        [0, 0, 0],
+        [1, 1, 1],
+        [1, 0, 0],
+        [1, 1, 1],
+        [0, 0, 1],
+        [1, 1, 1],
+        [0, 0, 0],
+        [0, 0, 0]
+    ],
+    [
+        [0, 0, 0],
+        [1, 1, 1],
+        [1, 0, 0],
+        [1, 1, 1],
+        [1, 0, 1],
+        [1, 1, 1],
+        [0, 0, 0],
+        [0, 0, 0]
+    ],
+    [
+        [0, 0, 0],
+        [1, 1, 1],
+        [0, 0, 1],
+        [0, 0, 1], 
+        [0, 0, 1],
+        [0, 0, 1],
+        [0, 0, 0],
+        [0, 0, 0]
+    ],
+    [
+        [0, 0, 0],
+        [1, 1, 1],
+        [1, 0, 1],
+        [1, 1, 1],
+        [1, 0, 1],
+        [1, 1, 1],
+        [0, 0, 0],
+        [0, 0, 0]
+    ],
+    [
+        [0, 0, 0],
+        [1, 1, 1],
+        [1, 0, 1],
+        [1, 1, 1],
+        [0, 0, 1],
+        [1, 1, 1],
+        [0, 0, 0],
+        [0, 0, 0]
+    ],
+    [
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 1, 0],
+        [0, 0, 0],
+        [0, 1, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0]
+    ]
 ];
 
 #[entry]
@@ -109,8 +182,6 @@ fn main() -> ! {
         display.clear_display(i).unwrap();
     }
 
-    // HH:MM:SS = 8 chars.
-    // 12:34:56
     let mut hours = 12u8;
     let mut mins = 34u8;
     let mut secs = 56u8;
@@ -125,17 +196,20 @@ fn main() -> ! {
             (secs / 10), (secs % 10),
         ];
 
-        // We have 8 chars * 3 cols = 24 cols of data.
-        // We have 32 cols total space.
-        // Gaps: 7 gaps between 8 chars.
-        // Width = 24 + 7 = 31 cols.
-        // Center it? Left pad 0.
-        
         let mut fb = [0u8; 32];
         let mut cursor = 0; // Start at col 0
 
         for (i, &d) in digits.iter().enumerate() {
-            let bitmap = FONT[d as usize];
+            // Convert visual font to bitmap cols
+            let mut bitmap = [0u8; 3];
+            for r in 0..8 {
+                for c in 0..3 {
+                    if FONT[d as usize][r][c] != 0 {
+                        bitmap[c] |= 1 << r;
+                    }
+                }
+            }
+
             // Draw 3 bytes
             if cursor + 3 <= 32 {
                  fb[cursor] = bitmap[0];
@@ -145,19 +219,11 @@ fn main() -> ! {
             cursor += 3;
             // Add 1 pixel gap, except after last char
             if i < 7 {
-                cursor += 1; // Leave 0 (gap)
+                cursor += 1;
             }
         }
 
         // Write to display
-        // fb[0] is Leftmost col logic.
-        // Map fb to MAX7219 devices (4 devices, 8 cols each).
-        // Device 0 (Physical Right?) vs Device 3. 
-        // Previous experiment showed we needed to reverse digit order (3-i) for digits.
-        // This implies Logical Device 0 is Rightmost.
-        // So FB index 0 (Leftmost) should go to Device 3, Col 0?
-        // We construct a full 8-byte array for each device to use write_raw correctly
-        
         for dev_idx in 0..4 {
             // Fix string order: 0->0, 1->1 ...
             let logical_dev = dev_idx; 
@@ -190,7 +256,6 @@ fn main() -> ! {
 
         timer.delay_ms(1000);
         
-        // Inc time
         secs += 1;
         if secs >= 60 {
             secs = 0;
@@ -204,7 +269,6 @@ fn main() -> ! {
             hours = 0;
         }
         
-        // Blink LED
         led.toggle().unwrap();
     }
 }
