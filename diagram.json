@@ -1,114 +1,40 @@
 {
-    "version": 1,
-    "author": "Antigravity",
-    "editor": "wokwi",
-    "parts": [
-        {
-            "type": "wokwi-pi-pico",
-            "id": "pico",
-            "top": 39.3,
-            "left": 143.75,
-            "rotate": 270,
-            "attrs": {}
-        },
-        {
-            "type": "wokwi-max7219-matrix",
-            "id": "matrix1",
-            "top": -47.4,
-            "left": 7.44,
-            "attrs": {
-                "layout": "fc16",
-                "color": "lightblue",
-                "chain": "4"
-            }
-        },
-        {
-            "type": "wokwi-pushbutton",
-            "id": "btn1",
-            "top": 120,
-            "left": 0,
-            "attrs": {
-                "color": "red"
-            }
-        }
-    ],
-    "connections": [
-        [
-            "pico:3V3",
-            "matrix1:VCC",
-            "red",
-            []
-        ],
-        [
-            "pico:GND.8",
-            "matrix1:GND",
-            "red",
-            [
-                "v-39.6",
-                "h278.4",
-                "v-134.4"
-            ]
-        ],
-        [
-            "pico:GP18",
-            "matrix1:CLK",
-            "green",
-            [
-                "v-68.4",
-                "h115.2",
-                "v-76.8"
-            ]
-        ],
-        [
-            "pico:GP17",
-            "matrix1:CS",
-            "gold",
-            [
-                "v-58.8",
-                "h105.6",
-                "v-96"
-            ]
-        ],
-        [
-            "pico:GP19",
-            "matrix1:DIN",
-            "orange",
-            [
-                "v-49.2",
-                "h144",
-                "v-115.2"
-            ]
-        ],
-        [
-            "pico:VBUS",
-            "matrix1:V+",
-            "purple",
-            [
-                "v-30",
-                "h307.2",
-                "v-153.6"
-            ]
-        ],
-        [
-            "btn1:1.L",
-            "pico:GND.1",
-            "black",
-            [
-                "h-20",
-                "v100",
-                "h100"
-            ]
-        ],
-        [
-            "btn1:2.R",
-            "pico:GP15",
-            "blue",
-            [
-                "h20",
-                "v-50",
-                "h100"
-            ]
-        ]
-    ],
-    "dependencies": {}
+  "version": 1,
+  "author": "Antigravity",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "wokwi-pi-pico",
+      "id": "pico",
+      "top": 39.3,
+      "left": 143.75,
+      "rotate": 270,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-max7219-matrix",
+      "id": "matrix1",
+      "top": -47.4,
+      "left": 7.44,
+      "attrs": { "layout": "fc16", "color": "lightblue", "chain": "4" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn1",
+      "top": 227,
+      "left": 153.6,
+      "attrs": { "color": "red" }
+    }
+  ],
+  "connections": [
+    [ "pico:3V3", "matrix1:VCC", "red", [] ],
+    [ "pico:GND.8", "matrix1:GND", "red", [ "v-39.6", "h278.4", "v-134.4" ] ],
+    [ "pico:GP18", "matrix1:CLK", "green", [ "v-68.4", "h115.2", "v-76.8" ] ],
+    [ "pico:GP17", "matrix1:CS", "gold", [ "v-58.8", "h105.6", "v-96" ] ],
+    [ "pico:GP19", "matrix1:DIN", "orange", [ "v-49.2", "h144", "v-115.2" ] ],
+    [ "pico:VBUS", "matrix1:V+", "purple", [ "v-30", "h307.2", "v-153.6" ] ],
+    [ "btn1:2.r", "pico:GP15", "blue", [ "h57.8", "v-86.2" ] ],
+    [ "btn1:1.l", "pico:GND.1", "green", [ "h-38.4", "h-9.6" ] ]
+  ],
+  "dependencies": {}
 }
