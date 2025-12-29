@@ -2,7 +2,7 @@
 #![no_main]
 
 use cortex_m_rt::entry;
-use embedded_hal::digital::v2::ToggleableOutputPin;
+use embedded_hal::digital::v2::{InputPin, ToggleableOutputPin};
 use panic_halt as _;
 use rp_pico::hal::{
     clocks::{init_clocks_and_plls, Clock},
@@ -160,6 +160,7 @@ fn main() -> ! {
     );
 
     let mut led = pins.led.into_push_pull_output();
+    let button = pins.gpio15.into_pull_up_input();
 
     let mosi = pins.gpio19.into_function::<FunctionSpi>();
     let sck = pins.gpio18.into_function::<FunctionSpi>();
@@ -185,6 +186,8 @@ fn main() -> ! {
     let mut mins = 34u8;
     let mut secs = 56u8;
 
+    let mut last_button_state = true; // Pull-up means true is released
+
     loop {
         // Construct display string
         let digits = [
@@ -202,7 +205,6 @@ fn main() -> ! {
             for r in 0..8 {
                 for c in 0..3 {
                     if FONT[d as usize][r][c] != 0 {
-                        // Map to 32-bit row. Column 0 is MSB of first device.
                         let bit_pos = 31 - (cursor + c);
                         if bit_pos < 32 {
                             fb_rows[r] |= 1 << bit_pos;
@@ -211,29 +213,38 @@ fn main() -> ! {
                 }
             }
             cursor += 3;
-            // Add 1 pixel gap, except after last char
             if i < 7 {
                 cursor += 1;
             }
         }
 
-        // Write row-by-row to the 4 chained devices
         for dev_idx in 0..4 {
             let mut dev_buffer = [0u8; 8];
             for r in 0..8 {
-                // Extract 8 bits for this device's row r
-                // Device 0: bits 31-24
-                // Device 1: bits 23-16
-                // ...
                 let shift = 24 - (dev_idx * 8);
                 dev_buffer[r] = ((fb_rows[r] >> shift) & 0xFF) as u8;
-                
-                // If it's upside down on hardware, use dev_buffer[7 - r] or dev_buffer[r].reverse_bits()
             }
             display.write_raw(dev_idx, &dev_buffer).unwrap();
         }
 
-        timer.delay_ms(1000);
+        // Sub-loop to poll button and wait for 1 second
+        // Using 100 iterations of 10ms for approx 1s delay
+        for _ in 0..100 {
+            // Check button (active low because of pull-up)
+            let current_state = button.is_low().unwrap();
+            if current_state && !last_button_state {
+                // Button pressed (transition High -> Low)
+                mins += 1;
+                if mins >= 60 {
+                    mins = 0;
+                    hours = (hours + 1) % 24;
+                }
+                // Update display immediately on button press
+                break; 
+            }
+            last_button_state = current_state;
+            timer.delay_ms(10);
+        }
         
         secs += 1;
         if secs >= 60 {
