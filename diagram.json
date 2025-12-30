@@ -32,9 +32,9 @@
     [ "pico:GP18", "matrix1:CLK", "green", [ "v-68.4", "h115.2", "v-76.8" ] ],
     [ "pico:GP17", "matrix1:CS", "gold", [ "v-58.8", "h105.6", "v-96" ] ],
     [ "pico:GP19", "matrix1:DIN", "orange", [ "v-49.2", "h144", "v-115.2" ] ],
-    [ "pico:VBUS", "matrix1:V+", "purple", [ "v-30", "h307.2", "v-153.6" ] ],
-    [ "btn1:2.r", "pico:GP15", "blue", [ "h57.8", "v-86.2" ] ],
-    [ "btn1:1.l", "pico:GND.1", "green", [ "h-38.4", "h-9.6" ] ]
+    [ "pico:VBUS", "matrix1:V+", "#8f4814", [ "v-30", "h307.2", "v-153.6" ] ],
+    [ "btn1:2.r", "pico:GP15", "white", [ "h57.8", "v-86.2" ] ],
+    [ "btn1:1.l", "pico:GND.1", "black", [ "h-38.4", "h-9.6" ] ]
   ],
   "dependencies": {}
 }
