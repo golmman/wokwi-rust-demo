@@ -72,7 +72,7 @@ mod app {
         watchdog::Watchdog,
         fugit::{RateExtU32, ExtU32},
     };
-    use embedded_hal::digital::v2::ToggleableOutputPin;
+    use embedded_hal::digital::v2::{InputPin, ToggleableOutputPin};
 
     // Type definition for the MAX7219 display
     type Spi0 = Spi<rp_pico::hal::spi::Enabled, rp_pico::hal::pac::SPI0, (
@@ -87,6 +87,9 @@ mod app {
     #[shared]
     struct Shared {
         clock: ClockState,
+        button: Pin<Gpio15, FunctionSio<SioInput>, PullUp>,
+        alarm1: rp_pico::hal::timer::Alarm1,
+        repeat_delay: u32,
     }
 
     // Local resources (accessed by single tasks)
@@ -94,7 +97,6 @@ mod app {
     struct Local {
         display: DisplayType,
         led: rp_pico::hal::gpio::Pin<rp_pico::hal::gpio::bank0::Gpio25, rp_pico::hal::gpio::FunctionSio<rp_pico::hal::gpio::SioOutput>, rp_pico::hal::gpio::PullDown>,
-        button: Pin<Gpio15, FunctionSio<SioInput>, PullUp>,
         alarm: Alarm0,
     }
 
@@ -122,6 +124,9 @@ mod app {
         // Schedule first tick in 1 second
         alarm.schedule(1_000_000u32.micros()).unwrap();
         alarm.enable_interrupt();
+
+        let mut alarm1 = timer.alarm_1().unwrap();
+        alarm1.enable_interrupt();
 
         let pins = rp_pico::Pins::new(
             pac.IO_BANK0,
@@ -159,11 +164,13 @@ mod app {
         (
             Shared {
                 clock: ClockState { hours: 12, mins: 34, secs: 56 },
+                button,
+                alarm1,
+                repeat_delay: 500_000,
             },
             Local {
                 display,
                 led,
-                button,
                 alarm,
             },
             init::Monotonics(),
@@ -197,17 +204,16 @@ mod app {
     }
 
     // Hardware Task: GPIO Interrupt (Button Press)
-    #[task(binds = IO_IRQ_BANK0, priority = 1, shared = [clock], local = [button])]
+    #[task(binds = IO_IRQ_BANK0, priority = 1, shared = [clock, button, alarm1, repeat_delay])]
     fn button_press(mut ctx: button_press::Context) {
-        // Clear interrupt
-        ctx.local.button.clear_interrupt(rp_pico::hal::gpio::Interrupt::EdgeLow);
-
-        // Simple Debounce: ideally use monotonic, but for now we assume 
-        // the interrupt won't trigger too rapidly or we rely on user not spamming.
-        // A better way is preventing next update for X ms.
-        // For simplicity in this demo, strict debouncing is omitted to keep code small,
-        // relying on Wokwi's clean signals or adding a small software check.
+        // Initial Press
         
+        // Disable interrupt to prevent bouncing re-entry
+        ctx.shared.button.lock(|b| {
+            b.set_interrupt_enabled(rp_pico::hal::gpio::Interrupt::EdgeLow, false);
+            b.clear_interrupt(rp_pico::hal::gpio::Interrupt::EdgeLow);
+        });
+
         ctx.shared.clock.lock(|c| {
             c.mins += 1;
              if c.mins >= 60 {
@@ -217,6 +223,60 @@ mod app {
         });
 
         update_display::spawn().ok();
+
+        // Initialize repeat delay and schedule repeat task
+        let delay = 500_000; // Start with 500ms
+        ctx.shared.repeat_delay.lock(|d| *d = delay);
+        
+        ctx.shared.alarm1.lock(|a| {
+            a.clear_interrupt();
+            a.schedule(delay.micros()).ok(); // Ignore if already running, though shouldn't be
+        });
+    }
+
+    // Hardware Task: Button Repeat (Timer 1)
+    #[task(binds = TIMER_IRQ_1, priority = 1, shared = [clock, button, alarm1, repeat_delay])]
+    fn button_repeat(mut ctx: button_repeat::Context) {
+        // Clear alarm interrupt first
+        ctx.shared.alarm1.lock(|a| a.clear_interrupt());
+
+        let is_held = ctx.shared.button.lock(|b| b.is_low().unwrap_or(false));
+
+        if is_held {
+            // Button is still held, update clock
+             ctx.shared.clock.lock(|c| {
+                c.mins += 1;
+                 if c.mins >= 60 {
+                    c.mins = 0;
+                    c.hours = (c.hours + 1) % 24;
+                }
+            });
+            update_display::spawn().ok();
+
+            // Accelerate
+            let mut delay = 0;
+            ctx.shared.repeat_delay.lock(|d| {
+                if *d > 20_000 { // Min 20ms
+                     *d = (*d as u64 * 8 / 10) as u32; // Decrease by 20%
+                     if *d < 20_000 { *d = 20_000; }
+                }
+                delay = *d;
+            });
+
+            // Schedule next repeat
+            ctx.shared.alarm1.lock(|a| {
+                a.schedule(delay.micros()).ok();
+            });
+
+        } else {
+            // Button released
+            ctx.shared.button.lock(|b| {
+                // Clear any pending gpio interrupt flags that might have accumulated during bounce
+                b.clear_interrupt(rp_pico::hal::gpio::Interrupt::EdgeLow);
+                // Re-enable Interrupt
+                b.set_interrupt_enabled(rp_pico::hal::gpio::Interrupt::EdgeLow, true);
+            });
+        }
     }
 
     // Software Task: Update Display (Lower Priority if needed, but here effectively same)
