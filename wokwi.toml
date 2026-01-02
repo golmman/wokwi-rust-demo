@@ -1,3 +1,4 @@
 [wokwi]
 version = 1
 firmware = "target/thumbv6m-none-eabi/release/wokwi-test.uf2"
+elf = "target/thumbv6m-none-eabi/release/wokwi-test"
