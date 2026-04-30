@@ -30,10 +30,12 @@ The crate is split into `src/lib.rs` (pure logic — `clock`, `display`, `font`,
 ├── number-design.png    # design reference for the 3x8 digit font
 ├── scenario.yaml        # Wokwi CLI automation scenario (button + screenshots)
 ├── run-sim.sh           # slow path: build + run scenario via wokwi-cli (cloud, ~10s, burns sim minutes)
-├── check.sh             # fast path: cargo fmt + clippy + cargo test --lib (host) + build + decoder anchor (~2s)
+├── check.sh             # fast path: cargo fmt + clippy + cargo test --lib (host) + build + byte-anchor + render→decode round-trip (~2-4s)
 ├── tools/
 │   ├── decode_screenshot.py  # decode a matrix1 PNG back to "HH:MM:SS"
-│   └── check_decoder.py # anchor: ensures decode_screenshot.py's FONT matches src/font.rs via display::GOLDEN_12_34_56
+│   └── check_decoder.py # byte-level anchor: decode_screenshot.py's FONT matches src/font.rs via display::GOLDEN_12_34_56
+├── examples/
+│   └── render_fixture.rs # host-side renderer: clock_to_frame(hh,mm,ss) → 256x64 PNG, used by check.sh's render→decode round-trip
 ├── .env                 # local-only: WOKWI_CLI_TOKEN=... (gitignored, not committed)
 ├── src/
 │   ├── main.rs          # binary: RTIC `#[app]` task wiring only — pulls hardware from `bsp`, logic from the library
@@ -300,10 +302,13 @@ The fast path covers ~80% of changes. Run **one** command:
 ./check.sh
 ```
 
-That runs `cargo fmt --check` + `cargo clippy -D warnings` (firmware target +
-host lib) + `cargo test --lib --target=<host>` + `cargo build --release` +
-`tools/check_decoder.py`. Total wall time: ~2 seconds. No cloud, no token, no
-sim-minute quota. Use this as the inner loop while iterating on logic.
+That runs, in order: `cargo fmt --check`, `cargo clippy -D warnings`
+(firmware target + host lib), `cargo test --lib --target=<host>`,
+`cargo build --release`, `tools/check_decoder.py` (byte-level decoder
+anchor), and a render→decode round-trip for four `HH:MM:SS` fixtures
+covering every digit. Total wall time: ~4s cold, ~2.4s warm. No cloud, no
+token, no sim-minute quota. Use this as the inner loop while iterating on
+logic.
 
 The slow path is required only when a change touches **hardware behaviour**
 — `bsp.rs`, anything in `main.rs::init`, or runtime SPI/GPIO/timer
@@ -343,25 +348,48 @@ Concrete classes of change and which step is sufficient:
 | `main.rs` task / RTIC resource changes                              | ✅ for compile        | ✅                     |
 | `diagram.json` / `wokwi.toml`                                        | n/a                  | ✅                     |
 
-### Decoder anchoring (why `tools/check_decoder.py` exists)
+### Decoder anchoring (why both `check_decoder.py` and `render_fixture` exist)
 
 `tools/decode_screenshot.py` duplicates the 3×8 glyph patterns from
 `src/font.rs` because Python can't import Rust `const`s. Without a check,
-someone could redesign a glyph in `font.rs`, update `display::GOLDEN_12_34_56`
-to match, and silently leave `decode_screenshot.py` decoding the new bitmap
-as the wrong character.
+someone could redesign a glyph in `font.rs`, update
+`display::GOLDEN_12_34_56` to match, and silently leave
+`decode_screenshot.py` decoding the new bitmap as the wrong character —
+or the *decoder's* PNG-sampling could regress (threshold, cell layout)
+without the firmware build noticing.
 
-`tools/check_decoder.py` closes that gap: it hardcodes the same bytes the
-Rust golden test pins, unpacks them back into a 32×8 grid, and asserts the
-Python decoder reads `12:34:56`. If you intentionally change a glyph, three
-edits move together:
+Two complementary anchors run in `check.sh`:
+
+1. **Byte-level anchor** — `tools/check_decoder.py`. Hardcodes the same
+   `[[u8; 8]; 4]` device buffers the Rust golden test pins for `12:34:56`,
+   unpacks them into a 32×8 grid, and feeds them to `decode_screenshot.py`'s
+   `decode_grid()` helper. Asserts the Python decoder reads `12:34:56`.
+   Catches *FONT-dict drift* between `font.rs` and the Python decoder.
+   Doesn't exercise PNG IO at all.
+
+2. **Pipeline round-trip** — `examples/render_fixture.rs` +
+   `tools/decode_screenshot.py`. Calls the firmware's real `clock_to_frame`
+   for several `HH:MM:SS` fixtures, writes a 256×64 PNG with the same 8×8
+   cell layout Wokwi uses, then runs the full PNG decoder on each and
+   asserts it reads back the original. Catches drift in *every* layer:
+   `font.rs` glyphs, `display.rs` packing, the PNG cell layout, the
+   decoder's sampling/threshold logic. The fixtures collectively use every
+   digit 0–9 and the colon glyph in every digit position.
+
+If you intentionally change a glyph, the failures cascade and tell you
+exactly which file to edit:
 
 1. The Rust unit test `display::tests::clock_to_frame_golden_for_12_34_56`
-   fails with the new bytes — copy them into `display::GOLDEN_12_34_56`.
-2. Update `decode_screenshot.py::FONT` to match the new glyph(s).
-3. Update `tools/check_decoder.py::GOLDEN_12_34_56` to match step 1.
+   fails first — copy the new bytes into `display::GOLDEN_12_34_56`.
+2. `tools/check_decoder.py` then fails — update `GOLDEN_12_34_56` in that
+   file *and* `decode_screenshot.py::FONT` to match the new glyph.
+3. The render→decode round-trip fails for any fixture using the changed
+   glyph — there's no separate update needed; once step 2 is done, the
+   round-trip should pass.
 
-Run `./check.sh` again; it's green only once all three are consistent.
+Run `./check.sh`; it's green only once all three are consistent. Bonus: you
+can render any clock state locally for visual inspection without a Wokwi
+sim run — `cargo run --example render_fixture --target=<host> -- 12 34 56 /tmp/out.png`.
 
 ### What's not covered by host tests
 

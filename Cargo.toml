@@ -8,6 +8,12 @@ edition = "2021"
 # `cargo test`-ed on the host. All embedded-only crates that only the
 # firmware binary needs live in the target-gated section below.
 
+# Host-only deps used by examples/tools (e.g. `examples/render_fixture.rs`
+# which writes PNGs for the decoder round-trip in `check.sh`). Dev-deps are
+# never linked into the firmware binary, so these don't affect flash size.
+[dev-dependencies]
+png = "0.17"
+
 # Firmware-only deps. These are skipped when targeting the host
 # (e.g. `cargo test --lib --target=<host-triple>`), so the pure-logic lib
 # can be host-tested without dragging in `rp2040-pac` etc.

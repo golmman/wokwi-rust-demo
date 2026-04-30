@@ -37,4 +37,28 @@ cargo build --release
 step "tools/check_decoder.py (Rust GOLDEN ↔ Python FONT anchor)"
 python3 tools/check_decoder.py
 
+step "render → decode round-trip (every digit)"
+# Renders firmware-side `clock_to_frame(hh,mm,ss)` to a host PNG via
+# `examples/render_fixture.rs`, then decodes it back through
+# `tools/decode_screenshot.py`. If any of {font.rs, display.rs, the PNG
+# layout, the decoder's sampling/threshold} drifts from the others, the
+# decoded text won't match the input. The fixtures below collectively use
+# every digit 0-9 and the colon glyph in every digit position.
+mkdir -p target/check
+for t in "00:00:00" "12:34:56" "18:27:39" "23:59:59"; do
+    h="${t%%:*}"
+    rest="${t#*:}"
+    m="${rest%%:*}"
+    s="${rest#*:}"
+    out="target/check/render-${h}-${m}-${s}.png"
+    cargo run --quiet --release --example render_fixture --target "$HOST_TRIPLE" \
+        -- "$h" "$m" "$s" "$out"
+    decoded=$(python3 tools/decode_screenshot.py "$out" | sed 's/^.*: //')
+    if [ "$decoded" != "$t" ]; then
+        echo "render→decode drift: rendered $t, decoded $decoded ($out)" >&2
+        exit 1
+    fi
+    printf '  ok: %s\n' "$t"
+done
+
 printf '\nAll checks passed.\n'
