@@ -1,0 +1,33 @@
+name: 'clock display + button minute increment'
+version: 1
+author: 'wokwi-rust-demo'
+
+# Initial firmware state: ClockState::new(12, 34, 56)
+# Timer ticks once a second; display refreshes on every tick.
+# Pressing btn1 calls add_minute() immediately; releasing within 500 ms
+# avoids the auto-repeat alarm (button_repeat) so we get exactly +1 minute.
+
+steps:
+  # Let init run and the first 1 Hz tick refresh the display.
+  - delay: 1500ms
+  - take-screenshot:
+      part-id: matrix1
+      save-to: target/wokwi/before.png
+
+  # Tap button: should bump minute 34 -> 35 with no acceleration.
+  - set-control:
+      part-id: btn1
+      control: pressed
+      value: 1
+  - delay: 100ms
+  - set-control:
+      part-id: btn1
+      control: pressed
+      value: 0
+
+  # Wait long enough for the next tick to repaint the display, then
+  # snapshot again. The minute digit should now read 35.
+  - delay: 1500ms
+  - take-screenshot:
+      part-id: matrix1
+      save-to: target/wokwi/after.png
