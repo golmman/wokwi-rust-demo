@@ -13,7 +13,7 @@ Key technologies:
 - **embedded-hal 0.2**, `panic-halt` for the panic handler
 - Wokwi simulator (`wokwi.toml`, `diagram.json`) + Wokwi CLI for headless / agent-driven runs (`scenario.yaml`, `run-sim.sh`)
 
-> `defmt`, `defmt-rtt`, and `panic-probe` are declared in `Cargo.toml` but currently **unimported and unused** anywhere in `src/`. The firmware emits no log output today; see [Adding agent-visible serial](#adding-agent-visible-serial) if you need it.
+> The firmware emits no log output today (no `defmt`, no UART). Re-add `defmt`/`defmt-rtt` to `Cargo.toml` (and `-Tdefmt.x` to `.cargo/config.toml`'s `rustflags`) if you wire up RTT, or follow [Adding agent-visible serial](#adding-agent-visible-serial) for UART output that `wokwi-cli` can capture.
 
 There is no `cargo test` target and no GitHub Actions CI today. Functional behavior is verified by running the firmware in Wokwi — interactively in the web UI / VS Code extension, or headless via `./run-sim.sh`, which captures `target/wokwi/{before,after}.png` for a human or agent to inspect (see [Running in Wokwi (CLI / agent-driven)](#running-in-wokwi-cli--agent-driven)). For host-side checks, see [Verification](#verification).
 
@@ -34,10 +34,12 @@ There is no `cargo test` target and no GitHub Actions CI today. Functional behav
 │   └── decode_screenshot.py  # decode a matrix1 PNG back to "HH:MM:SS"
 ├── .env                 # local-only: WOKWI_CLI_TOKEN=... (gitignored, not committed)
 ├── src/
-│   ├── main.rs          # RTIC `#[app]`: init + 3 hw tasks + 1 sw task
-│   ├── clock.rs         # `ClockState` (hours/mins/secs, tick, add_minute)
-│   ├── display.rs       # `prepare_buffer` → 4×[u8; 8] for the FC16 chain
-│   └── font.rs          # 3x8 bitmap font for digits 0–9 and `:`
+│   ├── main.rs          # RTIC `#[app]`: task wiring only — pulls hardware from `bsp`, tunables from `config`
+│   ├── bsp.rs           # Board support package: pin assignments, SPI, MAX7219 bring-up, alarms (`Board::take`)
+│   ├── config.rs        # Runtime tunables: tick interval, button repeat, SPI freq, intensity, INITIAL_TIME
+│   ├── clock.rs         # `ClockState` with private fields, accessors, `tick`/`add_{second,minute,hour}`
+│   ├── display.rs       # `Framebuffer` (32×8 bitmap) + `clock_to_frame` adapter + per-device packing
+│   └── font.rs          # `Glyph` enum + 3×8 bitmaps for digits 0–9 and `:`
 └── target/              # build output (gitignored, includes target/wokwi/ artifacts)
 ```
 
@@ -272,9 +274,13 @@ add/remove modules.
 - The whole RTIC app lives in `mod app` inside `src/main.rs`. New
   interrupt-driven logic should be a new RTIC task with explicit
   `shared = [...]` / `local = [...]` resource lists, not ad-hoc `static mut`.
-- Time math goes in `src/clock.rs`; pixel math goes in `src/display.rs`;
-  glyphs go in `src/font.rs`. Keep `main.rs` focused on hardware setup and
-  task wiring.
+- Module responsibilities — keep them honest:
+  - `bsp.rs` owns hardware: pin numbers, peripheral type aliases, SPI/MAX7219 bring-up. **Pin changes happen here only.**
+  - `config.rs` owns tunables: tick interval, button repeat parameters, SPI frequency, brightness, initial time. **No types, no logic.**
+  - `clock.rs` owns `ClockState` with private fields and `tick`/`add_*` semantics. Don't widen the public surface to `pub` fields.
+  - `display.rs` owns `Framebuffer` (pure pixels) plus the `clock_to_frame` adapter. Don't import `clock` from anywhere except via that adapter.
+  - `font.rs` owns the `Glyph` enum and bitmaps. Adding a new glyph is one variant + one match arm + one bitmap const — no integer offsets to keep in sync.
+  - `main.rs` is RTIC task wiring + ISR bodies only. It should not call into `rp_pico::hal` directly for anything `bsp.rs` could provide.
 - Use the existing `fugit` rate/duration extensions (`u32::Hz()`,
   `u32::micros()`) for SPI/timer values rather than raw integers.
 - Follow the surrounding formatting (`rustfmt` defaults — there is no

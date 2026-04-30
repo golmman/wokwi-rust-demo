@@ -11,12 +11,6 @@ rp-pico = { version = "0.9", features = ["boot2"] }
 embedded-hal = "0.2"
 cortex-m-rtic = "1.1"
 max7219 = "0.4"
-embedded-graphics = "0.8"
-defmt = "0.3"
-defmt-rtt = "0.4"
-format_no_std = "1.2.0"
-panic-probe = { version = "1.0", features = ["print-defmt"] }
-heapless = "0.7"
 
 [profile.release]
 opt-level = "z"
