@@ -358,23 +358,29 @@ someone could redesign a glyph in `font.rs`, update
 or the *decoder's* PNG-sampling could regress (threshold, cell layout)
 without the firmware build noticing.
 
-Two complementary anchors run in `check.sh`:
+Two anchors run in `check.sh`. The pipeline round-trip is the load-bearing
+one; the byte-level smoke test is a faster auxiliary check whose coverage
+is a strict subset of the round-trip's.
 
-1. **Byte-level anchor** — `tools/check_decoder.py`. Hardcodes the same
-   `[[u8; 8]; 4]` device buffers the Rust golden test pins for `12:34:56`,
-   unpacks them into a 32×8 grid, and feeds them to `decode_screenshot.py`'s
-   `decode_grid()` helper. Asserts the Python decoder reads `12:34:56`.
-   Catches *FONT-dict drift* between `font.rs` and the Python decoder.
-   Doesn't exercise PNG IO at all.
-
-2. **Pipeline round-trip** — `examples/render_fixture.rs` +
+1. **Pipeline round-trip (load-bearing)** — `examples/render_fixture.rs` +
    `tools/decode_screenshot.py`. Calls the firmware's real `clock_to_frame`
    for several `HH:MM:SS` fixtures, writes a 256×64 PNG with the same 8×8
    cell layout Wokwi uses, then runs the full PNG decoder on each and
    asserts it reads back the original. Catches drift in *every* layer:
    `font.rs` glyphs, `display.rs` packing, the PNG cell layout, the
-   decoder's sampling/threshold logic. The fixtures collectively use every
-   digit 0–9 and the colon glyph in every digit position.
+   decoder's sampling/threshold logic, the renderer's PNG writing. The
+   fixtures collectively use every digit 0–9 and the colon glyph in every
+   digit position.
+
+2. **Byte-level smoke test (auxiliary)** — `tools/check_decoder.py`.
+   Hardcodes the same `[[u8; 8]; 4]` device buffers the Rust golden test
+   pins for `12:34:56`, unpacks them into a 32×8 grid, and feeds them to
+   `decode_screenshot.py`'s `decode_grid()` helper. Asserts the Python
+   decoder reads `12:34:56`. Faster than the round-trip and bypasses PNG
+   IO, useful as a quick sanity check, but anything it would catch is also
+   caught by the round-trip above. Keep its `GOLDEN_12_34_56` in sync with
+   `display::GOLDEN_12_34_56` whenever you update the Rust constant — if
+   you forget, this script will fail before the round-trip does.
 
 If you intentionally change a glyph, the failures cascade and tell you
 exactly which file to edit:
