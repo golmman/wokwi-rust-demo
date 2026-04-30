@@ -28,7 +28,7 @@ use rp_pico::hal::{
 
 pub use rp_pico::hal::timer::{Alarm0, Alarm1};
 
-use crate::config::{CHAIN_LEN, DISPLAY_INTENSITY, SPI_FREQ_HZ, TICK_INTERVAL_US};
+use wokwi_test::config::{CHAIN_LEN, DISPLAY_INTENSITY, SPI_FREQ_HZ, TICK_INTERVAL_US};
 
 // === Configured-peripheral type aliases ===
 
@@ -123,7 +123,7 @@ impl Board {
             &mut pac.RESETS,
             clocks.peripheral_clock.freq(),
             SPI_FREQ_HZ.Hz(),
-            &embedded_hal::spi::MODE_0,
+            embedded_hal::spi::MODE_0,
         );
 
         let mut display = MAX7219::from_spi_cs(CHAIN_LEN, spi, cs).unwrap();

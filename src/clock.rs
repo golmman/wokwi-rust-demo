@@ -1,5 +1,3 @@
-
-
 /// 24-hour wall-clock state. Values are clamped on construction so the
 /// invariants `hours < 24`, `mins < 60`, `secs < 60` always hold; consumers
 /// can read fields through the `hours()`/`mins()`/`secs()` accessors and
@@ -60,5 +58,65 @@ impl ClockState {
     /// Increment the hours counter, wrapping at 24.
     pub fn add_hour(&mut self) {
         self.hours = (self.hours + 1) % 24;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_advances_seconds() {
+        let mut c = ClockState::new(12, 34, 56);
+        c.tick();
+        assert_eq!((c.hours(), c.mins(), c.secs()), (12, 34, 57));
+    }
+
+    #[test]
+    fn tick_rolls_seconds_into_minute() {
+        let mut c = ClockState::new(12, 34, 59);
+        c.tick();
+        assert_eq!((c.hours(), c.mins(), c.secs()), (12, 35, 0));
+    }
+
+    #[test]
+    fn tick_rolls_minute_into_hour() {
+        let mut c = ClockState::new(12, 59, 59);
+        c.tick();
+        assert_eq!((c.hours(), c.mins(), c.secs()), (13, 0, 0));
+    }
+
+    #[test]
+    fn tick_wraps_24_hour_day() {
+        let mut c = ClockState::new(23, 59, 59);
+        c.tick();
+        assert_eq!((c.hours(), c.mins(), c.secs()), (0, 0, 0));
+    }
+
+    #[test]
+    fn new_clamps_out_of_range_input() {
+        // 99h % 24 = 3, 99m % 60 = 39, 99s % 60 = 39.
+        let c = ClockState::new(99, 99, 99);
+        assert_eq!((c.hours(), c.mins(), c.secs()), (3, 39, 39));
+        // Crucially, subsequent ticks shouldn't panic on an oversized field.
+        let mut c = c;
+        for _ in 0..10 {
+            c.tick();
+        }
+        assert!(c.hours() < 24 && c.mins() < 60 && c.secs() < 60);
+    }
+
+    #[test]
+    fn sixty_add_minute_equals_one_add_hour() {
+        let mut a = ClockState::new(12, 0, 0);
+        let mut b = ClockState::new(12, 0, 0);
+        for _ in 0..60 {
+            a.add_minute();
+        }
+        b.add_hour();
+        assert_eq!(
+            (a.hours(), a.mins(), a.secs()),
+            (b.hours(), b.mins(), b.secs())
+        );
     }
 }

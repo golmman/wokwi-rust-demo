@@ -5,26 +5,19 @@ use panic_halt as _;
 use rtic::app;
 
 mod bsp;
-mod clock;
-mod config;
-mod display;
-mod font;
 
-use clock::ClockState;
-use config::{
+use wokwi_test::clock::ClockState;
+use wokwi_test::config::{
     BUTTON_REPEAT_DECAY_DEN, BUTTON_REPEAT_DECAY_NUM, BUTTON_REPEAT_INITIAL_US,
-    BUTTON_REPEAT_MIN_US, CHAIN_LEN, INITIAL_TIME, TICK_INTERVAL_US,
+    BUTTON_REPEAT_MIN_US, INITIAL_TIME, TICK_INTERVAL_US,
 };
+use wokwi_test::display;
 
 #[app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [I2C0_IRQ])]
 mod app {
     use super::*;
     use embedded_hal::digital::v2::{InputPin, ToggleableOutputPin};
-    use rp_pico::hal::{
-        fugit::ExtU32,
-        gpio::Interrupt,
-        timer::Alarm,
-    };
+    use rp_pico::hal::{fugit::ExtU32, gpio::Interrupt, timer::Alarm};
 
     // Shared resources (accessed by multiple tasks)
     #[shared]
@@ -92,7 +85,7 @@ mod app {
     #[task(binds = IO_IRQ_BANK0, priority = 1, shared = [clock, button, alarm1, repeat_delay])]
     fn button_press(mut ctx: button_press::Context) {
         // Initial Press
-        
+
         // Disable interrupt to prevent bouncing re-entry
         ctx.shared.button.lock(|b| {
             b.set_interrupt_enabled(Interrupt::EdgeLow, false);
@@ -123,7 +116,7 @@ mod app {
 
         if is_held {
             // Button is still held, update clock
-             ctx.shared.clock.lock(|c| c.add_minute());
+            ctx.shared.clock.lock(|c| c.add_minute());
             update_display::spawn().ok();
 
             // Accelerate the repeat: shrink by NUM/DEN, but never below the floor.
@@ -143,7 +136,6 @@ mod app {
             ctx.shared.alarm1.lock(|a| {
                 a.schedule(delay.micros()).ok();
             });
-
         } else {
             // Button released
             ctx.shared.button.lock(|b| {
@@ -161,13 +153,13 @@ mod app {
         let buffers = ctx
             .shared
             .clock
-            .lock(|c| crate::display::clock_to_frame(c).to_devices());
+            .lock(|c| display::clock_to_frame(c).to_devices());
 
         let display = ctx.local.display;
-        for dev_idx in 0..CHAIN_LEN {
+        for (dev_idx, buf) in buffers.iter().enumerate() {
             // A transient SPI hiccup shouldn't halt the firmware; the next
             // tick will repaint the display anyway.
-            let _ = display.write_raw(dev_idx, &buffers[dev_idx]);
+            let _ = display.write_raw(dev_idx, buf);
         }
     }
 }

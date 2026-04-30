@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# The library (`src/lib.rs`) is pure Rust with no external deps so it can be
+# `cargo test`-ed on the host. All embedded-only crates that only the
+# firmware binary needs live in the target-gated section below.
+
+# Firmware-only deps. These are skipped when targeting the host
+# (e.g. `cargo test --lib --target=<host-triple>`), so the pure-logic lib
+# can be host-tested without dragging in `rp2040-pac` etc.
+[target.thumbv6m-none-eabi.dependencies]
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 panic-halt = "0.2"

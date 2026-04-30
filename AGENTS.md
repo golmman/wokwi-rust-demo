@@ -15,7 +15,7 @@ Key technologies:
 
 > The firmware emits no log output today (no `defmt`, no UART). Re-add `defmt`/`defmt-rtt` to `Cargo.toml` (and `-Tdefmt.x` to `.cargo/config.toml`'s `rustflags`) if you wire up RTT, or follow [Adding agent-visible serial](#adding-agent-visible-serial) for UART output that `wokwi-cli` can capture.
 
-There is no `cargo test` target and no GitHub Actions CI today. Functional behavior is verified by running the firmware in Wokwi — interactively in the web UI / VS Code extension, or headless via `./run-sim.sh`, which captures `target/wokwi/{before,after}.png` for a human or agent to inspect (see [Running in Wokwi (CLI / agent-driven)](#running-in-wokwi-cli--agent-driven)). For host-side checks, see [Verification](#verification).
+The crate is split into `src/lib.rs` (pure logic — `clock`, `display`, `font`, `config`) and `src/main.rs` (the firmware binary — RTIC `#[app]` + `bsp`). The library has zero external deps and is host-`cargo test`-able; the binary's deps are gated to `[target.thumbv6m-none-eabi.dependencies]`. `./check.sh` runs the full host-side battery (fmt + clippy + tests + firmware build + decoder-anchor) in ~2s; `./run-sim.sh` is the slow path for hardware behaviour. There's no GitHub Actions CI today — the same checks should be run locally before pushing. See [Verification](#verification).
 
 ## Repository Layout
 
@@ -29,17 +29,20 @@ There is no `cargo test` target and no GitHub Actions CI today. Functional behav
 ├── diagram.json         # Wokwi circuit (Pico + MAX7219 chain + button)
 ├── number-design.png    # design reference for the 3x8 digit font
 ├── scenario.yaml        # Wokwi CLI automation scenario (button + screenshots)
-├── run-sim.sh           # build + run scenario via wokwi-cli; outputs to target/wokwi/
+├── run-sim.sh           # slow path: build + run scenario via wokwi-cli (cloud, ~10s, burns sim minutes)
+├── check.sh             # fast path: cargo fmt + clippy + cargo test --lib (host) + build + decoder anchor (~2s)
 ├── tools/
-│   └── decode_screenshot.py  # decode a matrix1 PNG back to "HH:MM:SS"
+│   ├── decode_screenshot.py  # decode a matrix1 PNG back to "HH:MM:SS"
+│   └── check_decoder.py # anchor: ensures decode_screenshot.py's FONT matches src/font.rs via display::GOLDEN_12_34_56
 ├── .env                 # local-only: WOKWI_CLI_TOKEN=... (gitignored, not committed)
 ├── src/
-│   ├── main.rs          # RTIC `#[app]`: task wiring only — pulls hardware from `bsp`, tunables from `config`
-│   ├── bsp.rs           # Board support package: pin assignments, SPI, MAX7219 bring-up, alarms (`Board::take`)
+│   ├── main.rs          # binary: RTIC `#[app]` task wiring only — pulls hardware from `bsp`, logic from the library
+│   ├── lib.rs           # library root: re-exports `clock`, `config`, `display`, `font` for host-side `cargo test`
+│   ├── bsp.rs           # binary-only: pin assignments, SPI, MAX7219 bring-up, alarms (`Board::take`) — not host-testable
 │   ├── config.rs        # Runtime tunables: tick interval, button repeat, SPI freq, intensity, INITIAL_TIME
-│   ├── clock.rs         # `ClockState` with private fields, accessors, `tick`/`add_{second,minute,hour}`
-│   ├── display.rs       # `Framebuffer` (32×8 bitmap) + `clock_to_frame` adapter + per-device packing
-│   └── font.rs          # `Glyph` enum + 3×8 bitmaps for digits 0–9 and `:`
+│   ├── clock.rs         # `ClockState` with private fields, accessors, `tick`/`add_{second,minute,hour}` (+ unit tests)
+│   ├── display.rs       # `Framebuffer` (32×8 bitmap) + `clock_to_frame` adapter + `GOLDEN_12_34_56` (+ unit tests)
+│   └── font.rs          # `Glyph` enum + 3×8 bitmaps for digits 0–9 and `:` (+ unit tests)
 └── target/              # build output (gitignored, includes target/wokwi/ artifacts)
 ```
 
@@ -275,12 +278,13 @@ add/remove modules.
   interrupt-driven logic should be a new RTIC task with explicit
   `shared = [...]` / `local = [...]` resource lists, not ad-hoc `static mut`.
 - Module responsibilities — keep them honest:
-  - `bsp.rs` owns hardware: pin numbers, peripheral type aliases, SPI/MAX7219 bring-up. **Pin changes happen here only.**
+  - `lib.rs` is the **library root**. It re-exports `clock`, `config`, `display`, `font`. Adding a module here means it can be host-tested via `cargo test --lib`. Adding embedded-only deps to a library module breaks that, so don't.
+  - `bsp.rs` is **binary-only** and owns hardware: pin numbers, peripheral type aliases, SPI/MAX7219 bring-up. **Pin changes happen here only.** Cannot be host-tested.
   - `config.rs` owns tunables: tick interval, button repeat parameters, SPI frequency, brightness, initial time. **No types, no logic.**
-  - `clock.rs` owns `ClockState` with private fields and `tick`/`add_*` semantics. Don't widen the public surface to `pub` fields.
-  - `display.rs` owns `Framebuffer` (pure pixels) plus the `clock_to_frame` adapter. Don't import `clock` from anywhere except via that adapter.
-  - `font.rs` owns the `Glyph` enum and bitmaps. Adding a new glyph is one variant + one match arm + one bitmap const — no integer offsets to keep in sync.
-  - `main.rs` is RTIC task wiring + ISR bodies only. It should not call into `rp_pico::hal` directly for anything `bsp.rs` could provide.
+  - `clock.rs` owns `ClockState` with private fields and `tick`/`add_*` semantics. Don't widen the public surface to `pub` fields. Has `#[cfg(test)] mod tests` covering rollovers and `new()` clamping.
+  - `display.rs` owns `Framebuffer` (pure pixels) plus the `clock_to_frame` adapter and the `GOLDEN_12_34_56` golden constant. Don't import `clock` from anywhere except via that adapter. Has `#[cfg(test)] mod tests` including the golden-byte test that pins `clock_to_frame(12,34,56)`'s exact output.
+  - `font.rs` owns the `Glyph` enum and bitmaps. Adding a new glyph is one variant + one match arm + one bitmap const (with `#[rustfmt::skip]`) — no integer offsets to keep in sync. Has `#[cfg(test)] mod tests` ensuring `Glyph::digit` returns the right variant for `0..=9` and clipping invariants.
+  - `main.rs` is the **binary**: RTIC task wiring + ISR bodies only. It pulls hardware from `bsp` and pure logic from the library via `use wokwi_test::{...}`. It should not call into `rp_pico::hal` directly for anything `bsp.rs` could provide.
 - Use the existing `fugit` rate/duration extensions (`u32::Hz()`,
   `u32::micros()`) for SPI/timer values rather than raw integers.
 - Follow the surrounding formatting (`rustfmt` defaults — there is no
@@ -290,40 +294,94 @@ add/remove modules.
 
 ## Verification
 
-Before declaring a change done, in addition to a clean release build:
+The fast path covers ~80% of changes. Run **one** command:
 
 ```sh
-cargo check --release          # fast type check on the embedded target
-cargo build --release          # full compile (must succeed)
-cargo clippy --release -- -D warnings   # optional but recommended
-cargo fmt --check              # formatting
-./build.sh                     # ensures the .uf2 still regenerates
+./check.sh
 ```
 
-If your change is observable at runtime (display output, button behavior,
-timing), additionally:
+That runs `cargo fmt --check` + `cargo clippy -D warnings` (firmware target +
+host lib) + `cargo test --lib --target=<host>` + `cargo build --release` +
+`tools/check_decoder.py`. Total wall time: ~2 seconds. No cloud, no token, no
+sim-minute quota. Use this as the inner loop while iterating on logic.
 
-- Re-run the Wokwi simulation from the freshly built `.uf2` and visually
-  confirm the clock advances and the button still increments minutes
-  (with acceleration when held).
-- For agent-driven verification (no human in the loop), run `./run-sim.sh`
-  and assert on the screenshots in `target/wokwi/` — either by `read`-ing
-  the PNGs as images or by piping them through `tools/decode_screenshot.py`.
-  See [Running in Wokwi (CLI / agent-driven)](#running-in-wokwi-cli--agent-driven).
+The slow path is required only when a change touches **hardware behaviour**
+— `bsp.rs`, anything in `main.rs::init`, or runtime SPI/GPIO/timer
+interaction. For those, additionally:
 
-There is no `cargo test` target — the crate is `no_std` firmware and has no
-host-side tests today. Do **not** add `#[cfg(test)]` blocks that pull in
-`std` without first refactoring the affected module to be host-buildable.
+```sh
+./run-sim.sh
+python3 tools/decode_screenshot.py target/wokwi/before.png target/wokwi/after.png
+```
+
+…and assert on the decoded `HH:MM:SS` deltas (not absolute values — see
+[Timing caveat](#timing-caveat-rp2040-in-wokwi)). This costs ~10s wall and
+~1 sim-minute against your monthly quota.
+
+### Iteration loop for agents
+
+Recommended sequence for any code change:
+
+1. **Edit.**
+2. **`./check.sh`.** Iterate until green. Most logic regressions surface here
+   with a `cargo test` failure that pinpoints `file:line` and shows the
+   actual vs expected values — no PNG decoding, no cloud round-trip.
+3. **Only if step 2 changed something hardware-touching:** `./run-sim.sh`,
+   then read the screenshots (or pipe through `tools/decode_screenshot.py`)
+   and verify behaviour. Frame assertions as **deltas** between `before.png`
+   and `after.png`, not absolute clock values.
+
+Concrete classes of change and which step is sufficient:
+
+| Change type                                                         | `check.sh` is enough | Need `run-sim.sh` too |
+| ------------------------------------------------------------------- | -------------------- | --------------------- |
+| `clock.rs` rollover / arithmetic                                    | ✅                    |                       |
+| `font.rs` glyph redesign                                            | ✅ (golden test catches drift) |             |
+| `display.rs` `Framebuffer` / layout / packing                       | ✅                    |                       |
+| `config.rs` constant retune (e.g. brightness, tick rate)            | ✅                    | ✅ (visual)            |
+| `bsp.rs` pin assignment / SPI freq / GPIO-IRQ wiring                | ✅ for compile        | ✅                     |
+| `main.rs` task / RTIC resource changes                              | ✅ for compile        | ✅                     |
+| `diagram.json` / `wokwi.toml`                                        | n/a                  | ✅                     |
+
+### Decoder anchoring (why `tools/check_decoder.py` exists)
+
+`tools/decode_screenshot.py` duplicates the 3×8 glyph patterns from
+`src/font.rs` because Python can't import Rust `const`s. Without a check,
+someone could redesign a glyph in `font.rs`, update `display::GOLDEN_12_34_56`
+to match, and silently leave `decode_screenshot.py` decoding the new bitmap
+as the wrong character.
+
+`tools/check_decoder.py` closes that gap: it hardcodes the same bytes the
+Rust golden test pins, unpacks them back into a 32×8 grid, and asserts the
+Python decoder reads `12:34:56`. If you intentionally change a glyph, three
+edits move together:
+
+1. The Rust unit test `display::tests::clock_to_frame_golden_for_12_34_56`
+   fails with the new bytes — copy them into `display::GOLDEN_12_34_56`.
+2. Update `decode_screenshot.py::FONT` to match the new glyph(s).
+3. Update `tools/check_decoder.py::GOLDEN_12_34_56` to match step 1.
+
+Run `./check.sh` again; it's green only once all three are consistent.
+
+### What's not covered by host tests
+
+- `bsp.rs` peripheral bring-up (SPI init, MAX7219 init): only the firmware
+  build exercises this, and only Wokwi shows it actually drives the chip.
+- RTIC task scheduling, ISR timing, button interrupt arming: not testable
+  on host.
+- The 40× sim-time-over-wall-time quirk (see [Timing caveat](#timing-caveat-rp2040-in-wokwi)).
+
+For all of those, `./run-sim.sh` is the only check.
 
 ## Pull Request Guidelines
 
 - Keep changes scoped: firmware logic, simulator config (`diagram.json`,
   `wokwi.toml`), and toolchain config (`.cargo/config.toml`, `memory.x`)
   often need to move together — call this out in the PR description.
-- Required local checks before pushing:
-  - `cargo build --release`
-  - `cargo fmt --check`
-  - (recommended) `cargo clippy --release -- -D warnings`
+- Required local checks before pushing: **`./check.sh`** (covers fmt,
+  clippy, host-side `cargo test`, firmware build, and the Python
+  decoder anchor). Run `./run-sim.sh` additionally if your change
+  touches `bsp.rs`, `main.rs::init`, or hardware-driven behaviour.
 - Existing commit messages are short, lower-case, imperative summaries
   (e.g. `add rtic for clock timing`, `clean up code`). Match that style.
 
