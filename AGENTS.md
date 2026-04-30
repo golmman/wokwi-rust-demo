@@ -41,7 +41,7 @@ The crate is split into `src/lib.rs` (pure logic — `clock`, `display`, `font`,
 │   ├── main.rs          # binary: RTIC `#[app]` task wiring only — pulls hardware from `bsp`, logic from the library
 │   ├── lib.rs           # library root: re-exports `clock`, `config`, `display`, `font` for host-side `cargo test`
 │   ├── bsp.rs           # binary-only: pin assignments, SPI, MAX7219 bring-up, alarms (`Board::take`) — not host-testable
-│   ├── config.rs        # Runtime tunables: tick interval, button repeat, SPI freq, intensity, INITIAL_TIME
+│   ├── config.rs        # Runtime tunables: tick interval, button repeat / debounce, SPI freq, intensity, INITIAL_TIME
 │   ├── clock.rs         # `ClockState` with private fields, accessors, `tick`/`add_{second,minute,hour}` (+ unit tests)
 │   ├── display.rs       # `Framebuffer` (32×8 bitmap) + `clock_to_frame` adapter + `GOLDEN_12_34_56` (+ unit tests)
 │   └── font.rs          # `Glyph` enum + 3×8 bitmaps for digits 0–9 and `:` (+ unit tests)
@@ -282,7 +282,7 @@ add/remove modules.
 - Module responsibilities — keep them honest:
   - `lib.rs` is the **library root**. It re-exports `clock`, `config`, `display`, `font`. Adding a module here means it can be host-tested via `cargo test --lib`. Adding embedded-only deps to a library module breaks that, so don't.
   - `bsp.rs` is **binary-only** and owns hardware: pin numbers, peripheral type aliases, SPI/MAX7219 bring-up. **Pin changes happen here only.** Cannot be host-tested.
-  - `config.rs` owns tunables: tick interval, button repeat parameters, SPI frequency, brightness, initial time. **No types, no logic.**
+  - `config.rs` owns tunables: tick interval, button repeat / debounce parameters, SPI frequency, brightness, initial time. **No types, no logic.**
   - `clock.rs` owns `ClockState` with private fields and `tick`/`add_*` semantics. Don't widen the public surface to `pub` fields. Has `#[cfg(test)] mod tests` covering rollovers and `new()` clamping.
   - `display.rs` owns `Framebuffer` (pure pixels) plus the `clock_to_frame` adapter and the `GOLDEN_12_34_56` golden constant. Don't import `clock` from anywhere except via that adapter. Has `#[cfg(test)] mod tests` including the golden-byte test that pins `clock_to_frame(12,34,56)`'s exact output.
   - `font.rs` owns the `Glyph` enum and bitmaps. Adding a new glyph is one variant + one match arm + one bitmap const (with `#[rustfmt::skip]`) — no integer offsets to keep in sync. Has `#[cfg(test)] mod tests` ensuring `Glyph::digit` returns the right variant for `0..=9` and clipping invariants.
@@ -432,9 +432,15 @@ For all of those, `./run-sim.sh` is the only check.
 - **Display chain length mismatch.** The `4` in `MAX7219::from_spi_cs(4, …)`
   must match `diagram.json`'s `"chain": "4"` and the `[[u8; 8]; 4]` buffer in
   `display.rs`.
-- **Button bouncing.** The button task disables its own GPIO interrupt and
-  re-enables it only after release in `button_repeat`. New button-related code
-  must respect that handshake or you will get spurious presses.
+- **Button bouncing.** Three RTIC tasks cooperate on a single press:
+  `button_press` (`IO_IRQ_BANK0`) registers the +1 minute and immediately
+  disables the GPIO `EdgeLow` IRQ; `button_debounce` (`TIMER_IRQ_2`,
+  `alarm2`) polls every `BUTTON_DEBOUNCE_US` and only re-enables the IRQ
+  once the button is settled HIGH; `button_repeat` (`TIMER_IRQ_1`,
+  `alarm1`) drives accelerating auto-repeat while still held and, on
+  release, hands off to `alarm2` so post-release bouncing settles before
+  the next press is accepted. New button-related code must respect this
+  three-task handshake or you will get spurious presses or eaten clicks.
 - **Picotool is optional.** Don't gate builds or CI on it; the BOOTSEL +
   `cp` workflow has no extra dependencies.
 - **`.env` holds secrets, never commit it.** `WOKWI_CLI_TOKEN` lives there;

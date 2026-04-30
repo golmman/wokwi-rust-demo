@@ -14,6 +14,14 @@ pub const TICK_INTERVAL_US: u32 = 1_000_000;
 /// (microseconds).
 pub const BUTTON_REPEAT_INITIAL_US: u32 = 500_000;
 
+/// Length of the post-press / post-release debounce window
+/// (microseconds). The GPIO IRQ stays masked for this long after a press
+/// (and again after a release detected during auto-repeat) so contact
+/// bounce can't fire spurious events. Should be a few × the switch's
+/// physical bounce time (typically 1–10 ms) but short enough that
+/// realistic re-clicks aren't blocked.
+pub const BUTTON_DEBOUNCE_US: u32 = 30_000;
+
 /// Lower bound on the auto-repeat period (microseconds). Each repeat
 /// shrinks the period by `BUTTON_REPEAT_DECAY_NUM / BUTTON_REPEAT_DECAY_DEN`
 /// until it hits this floor.

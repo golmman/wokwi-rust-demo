@@ -26,7 +26,7 @@ use rp_pico::hal::{
     watchdog::Watchdog,
 };
 
-pub use rp_pico::hal::timer::{Alarm0, Alarm1};
+pub use rp_pico::hal::timer::{Alarm0, Alarm1, Alarm2};
 
 use wokwi_test::config::{CHAIN_LEN, DISPLAY_INTENSITY, SPI_FREQ_HZ, TICK_INTERVAL_US};
 
@@ -64,10 +64,11 @@ pub struct Board {
     pub led: LedPin,
     pub alarm0: Alarm0,
     pub alarm1: Alarm1,
+    pub alarm2: Alarm2,
 }
 
 impl Board {
-    /// Configure clocks/PLL, GPIO, SPI, the MAX7219 chain, and the two
+    /// Configure clocks/PLL, GPIO, SPI, the MAX7219 chain, and the three
     /// timer alarms used by the firmware. Panics on init-time failure —
     /// there's no useful recovery for a Pico that won't bring its own
     /// peripherals up.
@@ -100,6 +101,12 @@ impl Board {
         // alarm1: button auto-repeat, scheduled on demand by ISRs.
         let mut alarm1 = timer.alarm_1().unwrap();
         alarm1.enable_interrupt();
+
+        // alarm2: button debounce window, scheduled after every press
+        // (and after release detected by alarm1) to gate the GPIO IRQ
+        // re-enable through bouncing.
+        let mut alarm2 = timer.alarm_2().unwrap();
+        alarm2.enable_interrupt();
 
         let pins = rp_pico::Pins::new(
             pac.IO_BANK0,
@@ -139,6 +146,7 @@ impl Board {
             led,
             alarm0,
             alarm1,
+            alarm2,
         }
     }
 }

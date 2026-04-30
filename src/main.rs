@@ -8,7 +8,7 @@ mod bsp;
 
 use wokwi_test::clock::ClockState;
 use wokwi_test::config::{
-    BUTTON_REPEAT_DECAY_DEN, BUTTON_REPEAT_DECAY_NUM, BUTTON_REPEAT_INITIAL_US,
+    BUTTON_DEBOUNCE_US, BUTTON_REPEAT_DECAY_DEN, BUTTON_REPEAT_DECAY_NUM, BUTTON_REPEAT_INITIAL_US,
     BUTTON_REPEAT_MIN_US, INITIAL_TIME, TICK_INTERVAL_US,
 };
 use wokwi_test::display;
@@ -25,6 +25,7 @@ mod app {
         clock: ClockState,
         button: bsp::ButtonPin,
         alarm1: bsp::Alarm1,
+        alarm2: bsp::Alarm2,
         repeat_delay: u32,
     }
 
@@ -44,6 +45,7 @@ mod app {
             led,
             alarm0,
             alarm1,
+            alarm2,
         } = bsp::Board::take(ctx.device);
 
         let (h, m, s) = INITIAL_TIME;
@@ -52,6 +54,7 @@ mod app {
                 clock: ClockState::new(h, m, s),
                 button,
                 alarm1,
+                alarm2,
                 repeat_delay: BUTTON_REPEAT_INITIAL_US,
             },
             Local {
@@ -82,7 +85,7 @@ mod app {
     }
 
     // Hardware Task: GPIO Interrupt (Button Press)
-    #[task(binds = IO_IRQ_BANK0, priority = 1, shared = [clock, button, alarm1, repeat_delay])]
+    #[task(binds = IO_IRQ_BANK0, priority = 1, shared = [clock, button, alarm1, alarm2, repeat_delay])]
     fn button_press(mut ctx: button_press::Context) {
         // Initial Press
 
@@ -104,10 +107,19 @@ mod app {
             a.clear_interrupt();
             a.schedule(delay.micros()).ok(); // Ignore if already running, though shouldn't be
         });
+
+        // Arm alarm2 for the short debounce — re-enables the GPIO IRQ once
+        // bouncing has settled, so a fast re-click registers as a fresh
+        // event instead of being eaten by the long auto-repeat-arming
+        // window.
+        ctx.shared.alarm2.lock(|a| {
+            a.clear_interrupt();
+            a.schedule(BUTTON_DEBOUNCE_US.micros()).ok();
+        });
     }
 
     // Hardware Task: Button Repeat (Timer 1)
-    #[task(binds = TIMER_IRQ_1, priority = 1, shared = [clock, button, alarm1, repeat_delay])]
+    #[task(binds = TIMER_IRQ_1, priority = 1, shared = [clock, button, alarm1, alarm2, repeat_delay])]
     fn button_repeat(mut ctx: button_repeat::Context) {
         // Clear alarm interrupt first
         ctx.shared.alarm1.lock(|a| a.clear_interrupt());
@@ -137,14 +149,40 @@ mod app {
                 a.schedule(delay.micros()).ok();
             });
         } else {
-            // Button released
-            ctx.shared.button.lock(|b| {
-                // Clear any pending gpio interrupt flags that might have accumulated during bounce
-                b.clear_interrupt(Interrupt::EdgeLow);
-                // Re-enable Interrupt
-                b.set_interrupt_enabled(Interrupt::EdgeLow, true);
+            // Button has been released. Hand off to alarm2 so any
+            // release-side contact bouncing settles before we re-enable
+            // the GPIO IRQ.
+            ctx.shared.alarm2.lock(|a| {
+                a.clear_interrupt();
+                a.schedule(BUTTON_DEBOUNCE_US.micros()).ok();
             });
         }
+    }
+
+    // Hardware Task: Button Debounce (Timer 2)
+    #[task(binds = TIMER_IRQ_2, priority = 1, shared = [button, alarm2])]
+    fn button_debounce(mut ctx: button_debounce::Context) {
+        ctx.shared.alarm2.lock(|a| a.clear_interrupt());
+
+        let is_held = ctx.shared.button.lock(|b| b.is_low().unwrap_or(false));
+
+        if is_held {
+            // Still held — keep polling. The GPIO IRQ stays disabled so
+            // press-side contact bounce can't fire spurious events; we'll
+            // re-enable it once we see the button settled HIGH.
+            ctx.shared.alarm2.lock(|a| {
+                a.schedule(BUTTON_DEBOUNCE_US.micros()).ok();
+            });
+            return;
+        }
+
+        // Button is settled HIGH. Clear any latched edge from contact
+        // bounce and re-enable EdgeLow so the next press registers as a
+        // fresh event.
+        ctx.shared.button.lock(|b| {
+            b.clear_interrupt(Interrupt::EdgeLow);
+            b.set_interrupt_enabled(Interrupt::EdgeLow, true);
+        });
     }
 
     // Software Task: Update Display (Lower Priority if needed, but here effectively same)
