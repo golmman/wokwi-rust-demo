@@ -34,6 +34,13 @@ cargo test --lib --target "$HOST_TRIPLE"
 step "cargo build --release (firmware: thumbv6m-none-eabi)"
 cargo build --release
 
+# Both feature flag configurations have to keep building. The
+# `dcf77-loopback` feature swaps in a TX path inside the dcf77_sample
+# task; cfg-gated regressions there only surface when that variant is
+# actually compiled.
+step "cargo build --release --features dcf77-loopback"
+cargo build --release --features dcf77-loopback
+
 step "tools/check_decoder.py (Rust GOLDEN ↔ Python FONT anchor)"
 python3 tools/check_decoder.py
 

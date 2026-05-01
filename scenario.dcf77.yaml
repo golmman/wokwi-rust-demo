@@ -1,0 +1,33 @@
+name: 'DCF77 sync via GP13 -> GP14 loopback'
+version: 1
+author: 'wokwi-rust-demo'
+
+# This scenario only makes sense against a firmware built with the
+# `dcf77-loopback` Cargo feature on. With that feature, the firmware
+# drives GP13 with the encoded telegram for its own current `(h, m)`,
+# and reads it back on GP14 (wired together by `diagram.dcf77.json`).
+# Within ~2 firmware minutes the receiver should sync and start
+# overwriting the displayed clock with decoded frames.
+#
+# The firmware boots at INITIAL_TIME = 12:34:56. Wokwi's RP2040 sim
+# advances firmware time ~40x faster than wall time, so each ms of
+# `delay` here ≈ 40 ms of firmware time. We use deltas (before vs.
+# after) for assertions because absolute clock values depend on the
+# 40x quirk.
+
+steps:
+  # Snapshot ~120 firmware seconds in: receiver has had time to
+  # acquire initial sync (one full minute) but hasn't yet emitted
+  # its first decoded frame.
+  - delay: 3000ms
+  - take-screenshot:
+      part-id: matrix1
+      save-to: target/wokwi/dcf77-before.png
+
+  # Run for several more firmware minutes — by now multiple decoded
+  # frames have been applied, so the displayed clock is being driven
+  # by the receiver round-trip rather than the boot init alone.
+  - delay: 6000ms
+  - take-screenshot:
+      part-id: matrix1
+      save-to: target/wokwi/dcf77-after.png

@@ -47,3 +47,25 @@ pub const DISPLAY_INTENSITY: u8 = 0x0;
 /// Boot-up wall-clock value (hours, minutes, seconds). Chosen so Wokwi
 /// smoke-tests have a recognizable starting point.
 pub const INITIAL_TIME: (u8, u8, u8) = (12, 34, 56);
+
+/// DCF77 polling cadence (microseconds). 10 ms gives ~10x oversampling of
+/// the shortest meaningful pulse (100 ms) and comfortable margin against
+/// the decoder's ±35 ms pulse-width tolerance windows.
+pub const DCF77_SAMPLE_US: u32 = 10_000;
+
+/// Pulse-width window for "bit = 0" (milliseconds, inclusive). Nominal
+/// pulse is 100 ms; ±35 ms tolerates receiver jitter + 10 ms sampling
+/// quantization.
+pub const DCF77_BIT0_MIN_MS: u32 = 65;
+pub const DCF77_BIT0_MAX_MS: u32 = 135;
+
+/// Pulse-width window for "bit = 1" (milliseconds, inclusive). Nominal
+/// pulse is 200 ms.
+pub const DCF77_BIT1_MIN_MS: u32 = 165;
+pub const DCF77_BIT1_MAX_MS: u32 = 235;
+
+/// Idle-HIGH duration threshold that marks the end-of-minute gap
+/// (milliseconds). Normal inter-pulse HIGH is ~800 ms (after a 200 ms
+/// bit-1 pulse); the gap is ~1.8 s (bit 59 has no pulse). 1500 ms is a
+/// comfortable midpoint.
+pub const DCF77_GAP_MIN_MS: u32 = 1_500;

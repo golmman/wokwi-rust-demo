@@ -3,6 +3,14 @@ name = "wokwi-test"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Off by default. When enabled, the firmware ships a DCF77 loopback
+# transmitter on `bsp::Dcf77OutPin` that re-broadcasts the current
+# `ClockState` as a real DCF77 pulse stream. Useful for driving the
+# firmware's own receiver inside the Wokwi simulator; harmless but
+# wasteful on real hardware (drives a GPIO nobody listens to).
+dcf77-loopback = []
+
 [dependencies]
 # The library (`src/lib.rs`) is pure Rust with no external deps so it can be
 # `cargo test`-ed on the host. All embedded-only crates that only the

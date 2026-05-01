@@ -9,8 +9,9 @@ mod bsp;
 use wokwi_test::clock::ClockState;
 use wokwi_test::config::{
     BUTTON_DEBOUNCE_US, BUTTON_REPEAT_DECAY_DEN, BUTTON_REPEAT_DECAY_NUM, BUTTON_REPEAT_INITIAL_US,
-    BUTTON_REPEAT_MIN_US, INITIAL_TIME, TICK_INTERVAL_US,
+    BUTTON_REPEAT_MIN_US, DCF77_SAMPLE_US, INITIAL_TIME, TICK_INTERVAL_US,
 };
+use wokwi_test::dcf77;
 use wokwi_test::display;
 
 #[app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [I2C0_IRQ])]
@@ -35,6 +36,16 @@ mod app {
         display: bsp::Display,
         led: bsp::LedPin,
         alarm: bsp::Alarm0,
+        dcf77_decoder: dcf77::Decoder,
+        dcf77_in: bsp::Dcf77InPin,
+        alarm3: bsp::Alarm3,
+        // Loopback TX state + output pin. Both `Some(...)` only with
+        // the `dcf77-loopback` feature on; `None` in production builds,
+        // and the unused TX code is LTO'd away. We can't `#[cfg]` these
+        // fields directly because RTIC's `local = [...]` task attribute
+        // doesn't see `cfg` strips before macro expansion.
+        dcf77_tx: Option<dcf77::TxState>,
+        dcf77_out: Option<bsp::Dcf77OutPin>,
     }
 
     #[init]
@@ -43,10 +54,21 @@ mod app {
             display,
             button,
             led,
+            dcf77_in,
+            dcf77_out,
             alarm0,
             alarm1,
             alarm2,
+            alarm3,
         } = bsp::Board::take(ctx.device);
+
+        // Construct the TX state machine only when the feature is on.
+        // (If we always built one, LTO couldn't drop the encoder code
+        // because `Some(TxState::new())` keeps the type's vtable live.)
+        #[cfg(feature = "dcf77-loopback")]
+        let dcf77_tx = Some(dcf77::TxState::new());
+        #[cfg(not(feature = "dcf77-loopback"))]
+        let dcf77_tx: Option<dcf77::TxState> = None;
 
         let (h, m, s) = INITIAL_TIME;
         (
@@ -61,6 +83,11 @@ mod app {
                 display,
                 led,
                 alarm: alarm0,
+                dcf77_decoder: dcf77::Decoder::new(),
+                dcf77_in,
+                alarm3,
+                dcf77_tx,
+                dcf77_out,
             },
             init::Monotonics(),
         )
@@ -198,6 +225,62 @@ mod app {
             // A transient SPI hiccup shouldn't halt the firmware; the next
             // tick will repaint the display anyway.
             let _ = display.write_raw(dev_idx, buf);
+        }
+    }
+
+    // Hardware Task: DCF77 Sample (Timer 3)
+    //
+    // Polls the DCF77 receiver pin every `DCF77_SAMPLE_US` microseconds
+    // and feeds the level into the pulse decoder. When the decoder
+    // returns a valid frame (happens at most once per minute, on the
+    // falling edge that ends the minute-marker gap) we write the new
+    // `(h, m, 0)` into the shared clock and repaint the display.
+    //
+    // With no DCF77 module wired and the loopback feature off, the pin
+    // idles HIGH (internal pull-up) and the decoder stays in
+    // `SearchingForGap` indefinitely — zero state churn, no clock writes.
+    //
+    // With `dcf77-loopback` enabled, this same task additionally drives
+    // the GP13 output pin via `TxState::step`, re-broadcasting the
+    // firmware's current `(hours, minutes)` as a real DCF77 pulse stream
+    // so the simulator's wired-up receiver can see it. Both halves
+    // share the 10 ms `alarm3` cadence (the RP2040 only has 4 alarms
+    // and the others are spoken for).
+    #[task(
+        binds = TIMER_IRQ_3,
+        priority = 1,
+        shared = [clock],
+        local = [dcf77_decoder, dcf77_in, alarm3, dcf77_tx, dcf77_out]
+    )]
+    fn dcf77_sample(mut ctx: dcf77_sample::Context) {
+        use embedded_hal::digital::v2::OutputPin;
+
+        ctx.local.alarm3.clear_interrupt();
+        let _ = ctx.local.alarm3.schedule(DCF77_SAMPLE_US.micros());
+
+        // TX (loopback only): with the feature off, both options below
+        // are `None` and this whole block compiles to a single
+        // `Option::is_some()` check that's always false. With the
+        // feature on, drive GP13 to the TX state machine's level. In
+        // the simulator GP13 → GP14 is a wire, so the very next
+        // `is_high()` read sees what we just wrote.
+        if let (Some(tx), Some(out)) = (ctx.local.dcf77_tx.as_mut(), ctx.local.dcf77_out.as_mut()) {
+            let (h, m) = ctx.shared.clock.lock(|c| (c.hours(), c.mins()));
+            let tx_level = tx.step(DCF77_SAMPLE_US, h, m);
+            let _ = if tx_level {
+                out.set_high()
+            } else {
+                out.set_low()
+            };
+        }
+
+        // RX: read the receiver pin and feed the decoder.
+        let level = ctx.local.dcf77_in.is_high().unwrap_or(true);
+        if let Some(frame) = ctx.local.dcf77_decoder.sample(level, DCF77_SAMPLE_US) {
+            ctx.shared
+                .clock
+                .lock(|c| c.set_time(frame.hours, frame.minutes, 0));
+            update_display::spawn().ok();
         }
     }
 }

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`wokwi-rust-demo` is a Rust **embedded firmware** project (`no_std`, `no_main`) for the **Raspberry Pi Pico** (RP2040, Cortex-M0+). It drives a chain of four **MAX7219** 8x8 LED matrices (FC16 layout) as an `HH:MM:SS` clock, with a push-button on `GP15` to set the minutes (acceleration on hold). The firmware runs on real hardware **and** in the [Wokwi](https://wokwi.com/) simulator using the same `.uf2` artifact.
+`wokwi-rust-demo` is a Rust **embedded firmware** project (`no_std`, `no_main`) for the **Raspberry Pi Pico** (RP2040, Cortex-M0+). It drives a chain of four **MAX7219** 8x8 LED matrices (FC16 layout) as an `HH:MM:SS` clock, with a push-button on `GP15` to set the minutes (acceleration on hold) and an optional **DCF77** longwave receiver on `GP14` for self-correcting time. The firmware runs on real hardware **and** in the [Wokwi](https://wokwi.com/) simulator using the same `.uf2` artifact.
 
 Key technologies:
 
@@ -37,12 +37,17 @@ The crate is split into `src/lib.rs` (pure logic — `clock`, `display`, `font`,
 ├── examples/
 │   └── render_fixture.rs # host-side renderer: clock_to_frame(hh,mm,ss) → 256x64 PNG, used by check.sh's render→decode round-trip
 ├── .env                 # local-only: WOKWI_CLI_TOKEN=... (gitignored, not committed)
+├── plans/dcf77/plan.md  # design rationale for the DCF77 receiver integration (see "DCF77 sync" below)
+├── diagram.dcf77.json   # alt diagram with `pico:GP13 -> pico:GP14` wire for the DCF77 loopback sim
+├── scenario.dcf77.yaml  # alt scenario for the loopback sim (used by `run-sim-dcf77.sh`)
+├── run-sim-dcf77.sh     # slow-path opt-in: build with `--features dcf77-loopback` + run the loopback sim
 ├── src/
 │   ├── main.rs          # binary: RTIC `#[app]` task wiring only — pulls hardware from `bsp`, logic from the library
-│   ├── lib.rs           # library root: re-exports `clock`, `config`, `display`, `font` for host-side `cargo test`
+│   ├── lib.rs           # library root: re-exports `clock`, `config`, `dcf77`, `display`, `font` for host-side `cargo test`
 │   ├── bsp.rs           # binary-only: pin assignments, SPI, MAX7219 bring-up, alarms (`Board::take`) — not host-testable
-│   ├── config.rs        # Runtime tunables: tick interval, button repeat / debounce, SPI freq, intensity, INITIAL_TIME
-│   ├── clock.rs         # `ClockState` with private fields, accessors, `tick`/`add_{second,minute,hour}` (+ unit tests)
+│   ├── config.rs        # Runtime tunables: tick interval, button repeat / debounce, SPI freq, intensity, INITIAL_TIME, DCF77 sample/pulse-width windows
+│   ├── clock.rs         # `ClockState` with private fields, accessors, `tick`/`add_{second,minute,hour}`/`set_time` (+ unit tests)
+│   ├── dcf77.rs         # `Decoder` (pulse stream → `Frame`) + `decode_bits` (telegram → `Frame`) + `TxState` (loopback encoder, used with `dcf77-loopback` feature) (+ unit tests)
 │   ├── display.rs       # `Framebuffer` (32×8 bitmap) + `clock_to_frame` adapter + `GOLDEN_12_34_56` (+ unit tests)
 │   └── font.rs          # `Glyph` enum + 3×8 bitmaps for digits 0–9 and `:` (+ unit tests)
 └── target/              # build output (gitignored, includes target/wokwi/ artifacts)
@@ -250,16 +255,18 @@ There is also a commented-out `probe-rs run --chip RP2040` runner in
 If you change pin assignments in `src/main.rs`, update `diagram.json` to match,
 or Wokwi will silently mis-wire:
 
-| Pico pin | MAX7219 / button | Purpose                 |
-| -------- | ---------------- | ----------------------- |
-| 3V3      | matrix1.VCC      | logic supply            |
-| VBUS     | matrix1.V+       | LED supply              |
-| GND      | matrix1.GND      | ground                  |
-| GP18     | matrix1.CLK      | SPI0 SCK                |
-| GP19     | matrix1.DIN      | SPI0 MOSI               |
-| GP17     | matrix1.CS       | chip select (GPIO out)  |
-| GP15     | btn1             | active-low, pull-up in  |
-| GP25     | (onboard LED)    | 1 Hz heartbeat blink    |
+| Pico pin | MAX7219 / button / DCF77 | Purpose                 |
+| -------- | ------------------------ | ----------------------- |
+| 3V3      | matrix1.VCC              | logic supply            |
+| VBUS     | matrix1.V+               | LED supply              |
+| GND      | matrix1.GND              | ground                  |
+| GP18     | matrix1.CLK              | SPI0 SCK                |
+| GP19     | matrix1.DIN              | SPI0 MOSI               |
+| GP17     | matrix1.CS               | chip select (GPIO out)  |
+| GP15     | btn1                     | active-low, pull-up in  |
+| GP14     | DCF77 receiver DATA      | active-LOW pulse, pull-up in (idle reads HIGH) |
+| GP13     | (loopback TX, optional)  | only configured with the `dcf77-loopback` feature; wired to GP14 in `diagram.dcf77.json` so the firmware can drive its own receiver in the simulator |
+| GP25     | (onboard LED)            | 1 Hz heartbeat blink    |
 
 > The `3V3 → matrix1.VCC` row reflects the intended wiring on a physical
 > MAX7219 module, but the Wokwi part `wokwi-max7219-matrix` doesn't expose a
@@ -280,10 +287,11 @@ add/remove modules.
   interrupt-driven logic should be a new RTIC task with explicit
   `shared = [...]` / `local = [...]` resource lists, not ad-hoc `static mut`.
 - Module responsibilities — keep them honest:
-  - `lib.rs` is the **library root**. It re-exports `clock`, `config`, `display`, `font`. Adding a module here means it can be host-tested via `cargo test --lib`. Adding embedded-only deps to a library module breaks that, so don't.
-  - `bsp.rs` is **binary-only** and owns hardware: pin numbers, peripheral type aliases, SPI/MAX7219 bring-up. **Pin changes happen here only.** Cannot be host-tested.
-  - `config.rs` owns tunables: tick interval, button repeat / debounce parameters, SPI frequency, brightness, initial time. **No types, no logic.**
-  - `clock.rs` owns `ClockState` with private fields and `tick`/`add_*` semantics. Don't widen the public surface to `pub` fields. Has `#[cfg(test)] mod tests` covering rollovers and `new()` clamping.
+  - `lib.rs` is the **library root**. It re-exports `clock`, `config`, `dcf77`, `display`, `font`. Adding a module here means it can be host-tested via `cargo test --lib`. Adding embedded-only deps to a library module breaks that, so don't.
+  - `bsp.rs` is **binary-only** and owns hardware: pin numbers, peripheral type aliases, SPI/MAX7219 bring-up, alarms 0..=3. **Pin changes happen here only.** Cannot be host-tested.
+  - `config.rs` owns tunables: tick interval, button repeat / debounce parameters, SPI frequency, brightness, initial time, DCF77 sample / pulse-width / gap windows. **No types, no logic.**
+  - `clock.rs` owns `ClockState` with private fields and `tick`/`add_*`/`set_time` semantics. Don't widen the public surface to `pub` fields. `set_time` is the DCF77-sync entry point; treat it like `new()` (clamps inputs). Has `#[cfg(test)] mod tests` covering rollovers, `new()` clamping, and `set_time`.
+  - `dcf77.rs` owns `Decoder` (10 ms `sample(level, dt_us)` → `Option<Frame>`) plus the pure-data `decode_bits` plus the loopback `TxState`. Pulse-width / gap thresholds come from `config`. Has three layers of `#[cfg(test)] mod tests`: bit-level decoder, pulse-stream decoder, and `encode → modulate → decode` round-trip (mirrors `check.sh`'s `render → decode` round-trip). The encoder + `TxState` are always compiled but only reachable via `Some(TxState)` when the `dcf77-loopback` feature is on; LTO drops them otherwise.
   - `display.rs` owns `Framebuffer` (pure pixels) plus the `clock_to_frame` adapter and the `GOLDEN_12_34_56` golden constant. Don't import `clock` from anywhere except via that adapter. Has `#[cfg(test)] mod tests` including the golden-byte test that pins `clock_to_frame(12,34,56)`'s exact output.
   - `font.rs` owns the `Glyph` enum and bitmaps. Adding a new glyph is one variant + one match arm + one bitmap const (with `#[rustfmt::skip]`) — no integer offsets to keep in sync. Has `#[cfg(test)] mod tests` ensuring `Glyph::digit` returns the right variant for `0..=9` and clipping invariants.
   - `main.rs` is the **binary**: RTIC task wiring + ISR bodies only. It pulls hardware from `bsp` and pure logic from the library via `use wokwi_test::{...}`. It should not call into `rp_pico::hal` directly for anything `bsp.rs` could provide.
@@ -304,11 +312,12 @@ The fast path covers ~80% of changes. Run **one** command:
 
 That runs, in order: `cargo fmt --check`, `cargo clippy -D warnings`
 (firmware target + host lib), `cargo test --lib --target=<host>`,
-`cargo build --release`, `tools/check_decoder.py` (byte-level decoder
-anchor), and a render→decode round-trip for four `HH:MM:SS` fixtures
-covering every digit. Total wall time: ~4s cold, ~2.4s warm. No cloud, no
-token, no sim-minute quota. Use this as the inner loop while iterating on
-logic.
+`cargo build --release` (default features) and `cargo build --release
+--features dcf77-loopback` (loopback variant), `tools/check_decoder.py`
+(byte-level decoder anchor), and a render→decode round-trip for four
+`HH:MM:SS` fixtures covering every digit. Total wall time: ~4s cold,
+~2.4s warm. No cloud, no token, no sim-minute quota. Use this as the
+inner loop while iterating on logic.
 
 The slow path is required only when a change touches **hardware behaviour**
 — `bsp.rs`, anything in `main.rs::init`, or runtime SPI/GPIO/timer
@@ -334,19 +343,26 @@ Recommended sequence for any code change:
 3. **Only if step 2 changed something hardware-touching:** `./run-sim.sh`,
    then read the screenshots (or pipe through `tools/decode_screenshot.py`)
    and verify behaviour. Frame assertions as **deltas** between `before.png`
-   and `after.png`, not absolute clock values.
+   and `after.png`, not absolute clock values. If your change touches the
+   DCF77 RX/TX wiring (`dcf77_sample`, `Dcf77InPin`/`Dcf77OutPin`,
+   `diagram.dcf77.json`), also run `./run-sim-dcf77.sh` — that one builds
+   with the loopback feature on and asserts the receiver actually decoded
+   a TX-broadcast frame.
 
 Concrete classes of change and which step is sufficient:
 
-| Change type                                                         | `check.sh` is enough | Need `run-sim.sh` too |
-| ------------------------------------------------------------------- | -------------------- | --------------------- |
-| `clock.rs` rollover / arithmetic                                    | ✅                    |                       |
-| `font.rs` glyph redesign                                            | ✅ (golden test catches drift) |             |
-| `display.rs` `Framebuffer` / layout / packing                       | ✅                    |                       |
-| `config.rs` constant retune (e.g. brightness, tick rate)            | ✅                    | ✅ (visual)            |
-| `bsp.rs` pin assignment / SPI freq / GPIO-IRQ wiring                | ✅ for compile        | ✅                     |
-| `main.rs` task / RTIC resource changes                              | ✅ for compile        | ✅                     |
-| `diagram.json` / `wokwi.toml`                                        | n/a                  | ✅                     |
+| Change type                                                         | `check.sh` is enough | Need `run-sim.sh` too | Need `run-sim-dcf77.sh` too |
+| ------------------------------------------------------------------- | -------------------- | --------------------- | --------------------------- |
+| `clock.rs` rollover / arithmetic                                    | ✅                    |                       |                             |
+| `font.rs` glyph redesign                                            | ✅ (golden test catches drift) |             |                             |
+| `display.rs` `Framebuffer` / layout / packing                       | ✅                    |                       |                             |
+| `config.rs` constant retune (e.g. brightness, tick rate, DCF77 windows) | ✅                | ✅ (visual)            |                             |
+| `dcf77.rs` decoder / encoder logic (pure data, no hw)               | ✅ (host round-trip catches drift) |          |                             |
+| `bsp.rs` pin assignment / SPI freq / GPIO-IRQ wiring                | ✅ for compile        | ✅                     |                             |
+| `main.rs` non-DCF77 task / RTIC resource changes                    | ✅ for compile        | ✅                     |                             |
+| `main.rs::dcf77_sample` task body / DCF77 RX/TX wiring              | ✅ for compile        | ✅                     | ✅                           |
+| `diagram.json` / `wokwi.toml`                                       | n/a                  | ✅                     |                             |
+| `diagram.dcf77.json` / `scenario.dcf77.yaml`                        | n/a                  |                       | ✅                           |
 
 ### Decoder anchoring (why both `check_decoder.py` and `render_fixture` exist)
 
@@ -407,15 +423,56 @@ sim run — `cargo run --example render_fixture --target=<host> -- 12 34 56 /tmp
 
 For all of those, `./run-sim.sh` is the only check.
 
+## DCF77 sync
+
+The clock can self-correct from a [DCF77](https://en.wikipedia.org/wiki/DCF77)
+longwave receiver wired to `GP14`. See `plans/dcf77/plan.md` for the full
+design rationale (decisions, alternatives, risks); the summary:
+
+- **Where the logic lives** — `src/dcf77.rs` (pure, host-testable). It has
+  three layers: `decode_bits` (a fully-received `[bool; 60]` → `Frame`), the
+  streaming `Decoder` (`sample(level, dt_us) → Option<Frame>`), and the
+  loopback `TxState` used by the sim to drive its own receiver. All three
+  are `#[cfg(test)]`-covered, and the encode → modulate → decode round-trip
+  is in `check.sh`'s host test set, so most regressions surface there.
+- **How the firmware drives it** — `src/main.rs`'s `dcf77_sample` task,
+  bound to `TIMER_IRQ_3` (= `alarm3`), polls `bsp::Dcf77InPin` every
+  `DCF77_SAMPLE_US` (10 ms) and feeds samples to `Decoder`. When `Decoder`
+  emits `Some(Frame)` (= falling edge that ends a minute-marker gap),
+  `clock.set_time(h, m, 0)` is applied. With no receiver wired the pin
+  idles HIGH (internal pull-up), the decoder stays in `SearchingForGap`,
+  and nothing is written to the clock — production firmware behaves as
+  before.
+- **`dcf77-loopback` Cargo feature (off by default)** — turns the
+  `dcf77_sample` task into a TX-and-RX combo: each tick it also drives
+  `bsp::Dcf77OutPin` on `GP13` with the encoded telegram for the
+  firmware's *current* `(h, m)`. Wire `GP13 → GP14` in `diagram.dcf77.json`
+  and the firmware becomes its own DCF77 source inside Wokwi. The
+  feature only swaps in `Some(...)` for the `Option<TxState>` /
+  `Option<Dcf77OutPin>` resources; without it both are `None` and LTO
+  drops the encoder + transmitter from the binary (~1 kB savings).
+- **Slow-path verification** — `./run-sim-dcf77.sh` builds with the
+  feature on, runs `scenario.dcf77.yaml` against `diagram.dcf77.json`,
+  and asserts the displayed minute changed at least once between
+  `dcf77-before.png` and `dcf77-after.png` (proof that RX decoded a
+  TX-broadcast frame and applied it to the clock).
+- **Initial sync time** — the receiver needs ~1 firmware minute to
+  acquire the first minute-marker gap, plus another ~1 minute to
+  collect a full frame, so the first `set_time` lands ~2 firmware
+  minutes after boot. The display continues to show `INITIAL_TIME`
+  advancing during that window.
+
 ## Pull Request Guidelines
 
 - Keep changes scoped: firmware logic, simulator config (`diagram.json`,
   `wokwi.toml`), and toolchain config (`.cargo/config.toml`, `memory.x`)
   often need to move together — call this out in the PR description.
 - Required local checks before pushing: **`./check.sh`** (covers fmt,
-  clippy, host-side `cargo test`, firmware build, and the Python
-  decoder anchor). Run `./run-sim.sh` additionally if your change
-  touches `bsp.rs`, `main.rs::init`, or hardware-driven behaviour.
+  clippy, host-side `cargo test`, firmware build for both feature
+  configurations, and the Python decoder anchor). Run `./run-sim.sh`
+  additionally if your change touches `bsp.rs`, `main.rs::init`, or
+  hardware-driven behaviour. Run `./run-sim-dcf77.sh` additionally if
+  your change touches the DCF77 RX/TX wiring or `diagram.dcf77.json`.
 - Existing commit messages are short, lower-case, imperative summaries
   (e.g. `add rtic for clock timing`, `clean up code`). Match that style.
 
@@ -450,5 +507,26 @@ For all of those, `./run-sim.sh` is the only check.
 - **Wokwi sim time runs faster than wall-clock for this RP2040 build.** See
   the [timing caveat](#timing-caveat-rp2040-in-wokwi). Write CLI/scenario
   assertions in terms of *deltas between snapshots*, not absolute `HH:MM:SS`.
+- **DCF77 RX polling and TX (loopback) share `alarm3`.** The RP2040 only has
+  4 hardware alarms (0 = 1 Hz tick, 1 = button repeat, 2 = button debounce,
+  3 = DCF77 10 ms poll). The loopback transmitter is folded into the same
+  `dcf77_sample` task body — it doesn't get its own alarm. If you ever need
+  to split RX and TX onto independent cadences, you have to either (a) free
+  up an alarm by reworking the button state machine, or (b) drop the sample
+  rate to 5 ms and time-slice. There is no fifth alarm.
+- **DCF77 receiver polarity.** The decoder assumes idle-HIGH, LOW pulses
+  (the convention used by HKW / Conrad / C-MAX modules). If you wire up a
+  receiver whose output is inverted (rare but it happens), every pulse will
+  read as a glitch and the decoder will sit in `SearchingForGap` forever.
+  Workaround: invert in software (`!level` in `dcf77_sample`) or pass the
+  signal through a transistor. We do **not** auto-detect polarity.
+- **`dcf77-loopback` feature is in `check.sh`.** Both the default config
+  and `--features dcf77-loopback` are built. Don't gate code on
+  `cfg(feature = ...)` in a way that compiles only one of the two — we
+  test both. RTIC's `#[app]` macro doesn't honour `#[cfg]` on tasks (the
+  `mod app` token stream is parsed before `cfg` strips items), so to keep
+  the loopback opt-in we use `Option<TxState>` / `Option<Dcf77OutPin>`
+  with `cfg`-gated initialisers, not `#[cfg]` on the task body or the
+  `local = [...]` list.
 
 [dash]: https://wokwi.com/dashboard/ci

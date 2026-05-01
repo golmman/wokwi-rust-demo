@@ -16,7 +16,7 @@ use rp_pico::hal::{
     clocks::{init_clocks_and_plls, Clock},
     fugit::RateExtU32,
     gpio::{
-        bank0::{Gpio15, Gpio16, Gpio17, Gpio18, Gpio19, Gpio25},
+        bank0::{Gpio13, Gpio14, Gpio15, Gpio16, Gpio17, Gpio18, Gpio19, Gpio25},
         FunctionSio, FunctionSpi, Interrupt, Pin, PullDown, PullUp, SioInput, SioOutput,
     },
     pac,
@@ -26,9 +26,11 @@ use rp_pico::hal::{
     watchdog::Watchdog,
 };
 
-pub use rp_pico::hal::timer::{Alarm0, Alarm1, Alarm2};
+pub use rp_pico::hal::timer::{Alarm0, Alarm1, Alarm2, Alarm3};
 
-use wokwi_test::config::{CHAIN_LEN, DISPLAY_INTENSITY, SPI_FREQ_HZ, TICK_INTERVAL_US};
+use wokwi_test::config::{
+    CHAIN_LEN, DCF77_SAMPLE_US, DISPLAY_INTENSITY, SPI_FREQ_HZ, TICK_INTERVAL_US,
+};
 
 // === Configured-peripheral type aliases ===
 
@@ -55,6 +57,19 @@ pub type ButtonPin = Pin<Gpio15, FunctionSio<SioInput>, PullUp>;
 /// Onboard LED on GP25, used as a 1 Hz heartbeat.
 pub type LedPin = Pin<Gpio25, FunctionSio<SioOutput>, PullDown>;
 
+/// DCF77 receiver data line on GP14. Active-HIGH idle, LOW pulses. The
+/// internal pull-up means the pin reads HIGH when no receiver is wired,
+/// which keeps the decoder in its initial `SearchingForGap` state (zero
+/// churn, no spurious decodes).
+pub type Dcf77InPin = Pin<Gpio14, FunctionSio<SioInput>, PullUp>;
+
+/// DCF77 loopback transmitter line on GP13. Push-pull output that
+/// re-broadcasts the firmware's current `(hours, minutes)` as a real
+/// DCF77 pulse stream — used by the Wokwi sim to drive its own receiver.
+/// Only configured when the `dcf77-loopback` Cargo feature is enabled
+/// (otherwise GP13 is left untouched and `Board::dcf77_out` is `None`).
+pub type Dcf77OutPin = Pin<Gpio13, FunctionSio<SioOutput>, PullDown>;
+
 // === Bring-up ===
 
 /// Everything the RTIC tasks need from configured hardware.
@@ -62,13 +77,18 @@ pub struct Board {
     pub display: Display,
     pub button: ButtonPin,
     pub led: LedPin,
+    pub dcf77_in: Dcf77InPin,
+    /// Loopback TX output. `Some(pin)` only with the `dcf77-loopback`
+    /// feature on; `None` in production builds (GP13 is left as-is).
+    pub dcf77_out: Option<Dcf77OutPin>,
     pub alarm0: Alarm0,
     pub alarm1: Alarm1,
     pub alarm2: Alarm2,
+    pub alarm3: Alarm3,
 }
 
 impl Board {
-    /// Configure clocks/PLL, GPIO, SPI, the MAX7219 chain, and the three
+    /// Configure clocks/PLL, GPIO, SPI, the MAX7219 chain, and the four
     /// timer alarms used by the firmware. Panics on init-time failure —
     /// there's no useful recovery for a Pico that won't bring its own
     /// peripherals up.
@@ -108,6 +128,12 @@ impl Board {
         let mut alarm2 = timer.alarm_2().unwrap();
         alarm2.enable_interrupt();
 
+        // alarm3: periodic DCF77 receiver poll. 10 ms cadence oversamples
+        // the shortest valid pulse (100 ms) by 10x.
+        let mut alarm3 = timer.alarm_3().unwrap();
+        alarm3.schedule(DCF77_SAMPLE_US.micros()).unwrap();
+        alarm3.enable_interrupt();
+
         let pins = rp_pico::Pins::new(
             pac.IO_BANK0,
             pac.PADS_BANK0,
@@ -119,6 +145,27 @@ impl Board {
 
         let button: ButtonPin = pins.gpio15.into_pull_up_input();
         button.set_interrupt_enabled(Interrupt::EdgeLow, true);
+
+        // DCF77 input: polled (no GPIO IRQ wiring). Internal pull-up means
+        // "no receiver attached" reads as idle-HIGH, and the decoder
+        // stays in `SearchingForGap` until a real receiver drives the
+        // line with a minute-marker gap.
+        let dcf77_in: Dcf77InPin = pins.gpio14.into_pull_up_input();
+
+        // DCF77 loopback output: only configured with the
+        // `dcf77-loopback` feature. Initialise HIGH (idle) so the
+        // decoder doesn't see a spurious falling edge before the TX
+        // state machine kicks in. Without the feature, GP13 is left
+        // in its reset state — `dcf77_out` is `None`.
+        #[cfg(feature = "dcf77-loopback")]
+        let dcf77_out: Option<Dcf77OutPin> = {
+            use embedded_hal::digital::v2::OutputPin;
+            let mut pin: Dcf77OutPin = pins.gpio13.into_push_pull_output();
+            let _ = pin.set_high();
+            Some(pin)
+        };
+        #[cfg(not(feature = "dcf77-loopback"))]
+        let dcf77_out: Option<Dcf77OutPin> = None;
 
         let mosi = pins.gpio19.into_function::<FunctionSpi>();
         let sck = pins.gpio18.into_function::<FunctionSpi>();
@@ -144,9 +191,12 @@ impl Board {
             display,
             button,
             led,
+            dcf77_in,
+            dcf77_out,
             alarm0,
             alarm1,
             alarm2,
+            alarm3,
         }
     }
 }

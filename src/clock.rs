@@ -59,6 +59,15 @@ impl ClockState {
     pub fn add_hour(&mut self) {
         self.hours = (self.hours + 1) % 24;
     }
+
+    /// Force the clock to a specific time. Used by DCF77 sync. Inputs are
+    /// clamped just like `new()` so the invariants `hours < 24`, `mins < 60`,
+    /// `secs < 60` continue to hold.
+    pub fn set_time(&mut self, hours: u8, mins: u8, secs: u8) {
+        self.hours = hours % 24;
+        self.mins = mins % 60;
+        self.secs = secs % 60;
+    }
 }
 
 #[cfg(test)]
@@ -118,5 +127,30 @@ mod tests {
             (a.hours(), a.mins(), a.secs()),
             (b.hours(), b.mins(), b.secs())
         );
+    }
+
+    #[test]
+    fn set_time_overwrites_fields() {
+        let mut c = ClockState::new(12, 34, 56);
+        c.set_time(13, 37, 0);
+        assert_eq!((c.hours(), c.mins(), c.secs()), (13, 37, 0));
+    }
+
+    #[test]
+    fn set_time_clamps_out_of_range_input() {
+        let mut c = ClockState::new(0, 0, 0);
+        c.set_time(99, 99, 99);
+        // Same wrapping rules as `new()`: 99 % 24 = 3, 99 % 60 = 39.
+        assert_eq!((c.hours(), c.mins(), c.secs()), (3, 39, 39));
+    }
+
+    #[test]
+    fn set_time_then_tick_advances_normally() {
+        // After a sync there must be no leftover sub-second state — the
+        // first tick should land cleanly on `secs + 1`.
+        let mut c = ClockState::new(23, 59, 59);
+        c.set_time(10, 30, 0);
+        c.tick();
+        assert_eq!((c.hours(), c.mins(), c.secs()), (10, 30, 1));
     }
 }

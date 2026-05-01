@@ -15,5 +15,6 @@
 
 pub mod clock;
 pub mod config;
+pub mod dcf77;
 pub mod display;
 pub mod font;
